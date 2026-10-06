@@ -1,0 +1,78 @@
+# tardis-gate is public. This file errs on the side of ignoring too much.
+# If something you need is ignored, add a narrow `!path` exception and say why.
+
+# --- Secrets and keys -------------------------------------------------------
+.env
+.env.*
+!.env.example
+.envrc
+*.env
+runner.env
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.gpg
+*.asc
+id_rsa*
+id_ed25519*
+id_ecdsa*
+*.crt
+*.csr
+credentials*
+*credentials*.json
+*secret*
+!**/*secret*.go
+!**/*secret*_test.go
+*.token
+.netrc
+.npmrc
+.pypirc
+hosts.yml
+service-account*.json
+temporal-*.key
+temporal-*.pem
+*.tfvars
+*.tfstate
+*.tfstate.*
+
+# --- Private material that must never land here ------------------------------
+# Only tardis-gate specs are public; anything else under specs/ is ignored.
+specs/*
+!specs/tardis-gate-*.md
+private/
+scratch/
+notes/
+*.private.*
+*.local.*
+
+# --- Agent and editor state ---------------------------------------------------
+.claude/settings.local.json
+.claude/session-state.md
+.claude/worktrees/
+.claude/projects/
+.codex/
+.agents/
+.beads/
+.dolt/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# --- Build and runtime outputs ------------------------------------------------
+/tardis
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.log
+/tmp/
