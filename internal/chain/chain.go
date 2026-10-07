@@ -1,0 +1,358 @@
+// Package chain reads and judges ship-check commits: empty commits that claim a
+// review ran against the nearest preceding code commit.
+package chain
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+)
+
+const (
+	SubjectPrefix = "ship-check: "
+	TrailerCheck  = "Ship-Check"
+	TrailerOf     = "Ship-Check-Of"
+	TrailerTool   = "Ship-Check-Tool"
+	MaxBodyLines  = 40
+)
+
+// Status values. Broken statuses are "broken(<reason>)".
+const (
+	Valid   = "valid"
+	Missing = "missing"
+)
+
+func broken(reason string) string { return "broken(" + reason + ")" }
+
+// commit is one entry of `git log`. Message text is fetched separately, per
+// commit, so nothing in a message can be mistaken for structure.
+type commit struct {
+	sha, tree string
+	parents   []string
+	subject   string
+}
+
+// checkGate returns the gate named by a check-commit subject.
+func (c commit) checkGate() (string, bool) {
+	return strings.CutPrefix(c.subject, SubjectPrefix)
+}
+
+// Verify walks merge-base(base, head)..head oldest first and returns a status
+// per requested gate. A commit whose subject starts "ship-check: " is a check
+// attempt; it counts as a check only if it has one parent and changes nothing,
+// and anything else is code. A later check for a gate replaces an earlier one,
+// and a code commit supersedes every valid check before it.
+func Verify(dir, base, head string, gates []string) (map[string]string, error) {
+	if err := refuseShallow(dir); err != nil {
+		return nil, err
+	}
+	// Resolve both names once; every later read uses the object IDs, so a ref
+	// that moves mid-run cannot mix two histories.
+	baseID, err := git(dir, "rev-parse", "--verify", "--quiet", base+"^{commit}")
+	if err != nil {
+		return nil, fmt.Errorf("base %q is not a commit in %s", base, dir)
+	}
+	headID, err := git(dir, "rev-parse", "--verify", "--quiet", head+"^{commit}")
+	if err != nil {
+		return nil, fmt.Errorf("head %q is not a commit in %s", head, dir)
+	}
+	// Starting from the merge base keeps a check from claiming a base commit
+	// that head's history doesn't contain.
+	mb, err := git(dir, "merge-base", baseID, headID)
+	if err != nil {
+		return nil, fmt.Errorf("base %q and head %q share no history", base, head)
+	}
+	commits, err := history(dir, "--reverse", "--topo-order", mb+".."+headID)
+	if err != nil {
+		return nil, err
+	}
+	trees := map[string]string{}
+	for _, c := range commits {
+		trees[c.sha] = c.tree
+	}
+
+	// The merge base can itself be a check commit (main fast-forwarded to the end
+	// of an earlier chain). Commit names the code before it, so start there too.
+	last, err := lastCode(dir, mb)
+	if err != nil {
+		return nil, err
+	}
+	state := map[string]string{}
+	for _, c := range commits {
+		if gate, ok := c.checkGate(); ok {
+			if len(c.parents) != 1 {
+				state[gate] = broken("not-single-parent")
+			} else if empty, err := isEmpty(dir, c, trees); err != nil {
+				return nil, err
+			} else if !empty {
+				state[gate] = broken("not-empty")
+			} else {
+				subject, body, err := message(dir, c.sha)
+				if err != nil {
+					return nil, err
+				}
+				state[gate] = judge(subject, body, gate, last)
+				continue
+			}
+		}
+		// A code commit, or a check attempt that is a merge or changes the tree.
+		for g, s := range state {
+			if s == Valid {
+				state[g] = broken("superseded")
+			}
+		}
+		last = c.sha
+	}
+
+	// The verdict is about headID; refuse to hand it to a name that has moved on.
+	if now, err := git(dir, "rev-parse", "--verify", "--quiet", head+"^{commit}"); err != nil || now != headID {
+		return nil, fmt.Errorf("head %q moved during verification (was %s); verify again", head, headID)
+	}
+
+	out := make(map[string]string, len(gates))
+	for _, g := range gates {
+		if s, ok := state[g]; ok {
+			out[g] = s
+		} else {
+			out[g] = Missing
+		}
+	}
+	return out, nil
+}
+
+// judge checks an empty, single-parent check commit's message, after the
+// subject line, against the schema.
+func judge(subject, body, gate, lastCode string) string {
+	summary, block := splitTrailers(body)
+	t, reason := parseTrailers(block)
+	switch {
+	case subject != SubjectPrefix+gate: // the raw first line, not git's %s
+		return broken("subject-mismatch")
+	case reason != "":
+		return broken(reason)
+	case CheckGateName(gate) != nil:
+		return broken("bad-gate")
+	case t[TrailerCheck] != gate:
+		return broken("subject-mismatch")
+	case CheckTool(t[TrailerTool]) != nil:
+		return broken("bad-tool")
+	case t[TrailerOf] != lastCode:
+		return broken("of-mismatch")
+	}
+	switch {
+	case len(strings.Split(summary, "\n")) > MaxBodyLines:
+		return broken("body-too-long")
+	case strings.TrimSpace(summary) == "": // as Commit refuses to write one
+		return broken("empty-summary")
+	}
+	return Valid
+}
+
+// splitTrailers splits the message after the subject line into the summary
+// and its final paragraph, which must be the trailer block. Only the one blank
+// line after the subject is dropped; every other line of the summary, blank or
+// not, counts toward the limit. Git's own trailer reader is not used: it stops
+// at a "---" line, which a Markdown summary may contain, and it follows the
+// user's trailer config.
+func splitTrailers(body string) (summary, block string) {
+	body = strings.TrimRight(body, "\n")
+	i := strings.LastIndex(body, "\n\n")
+	if i < 0 {
+		return "", strings.TrimLeft(body, "\n")
+	}
+	return strings.TrimPrefix(body[:i], "\n"), body[i+2:]
+}
+
+// parseTrailers requires the trailer block to be exactly the three
+// Ship-Check trailers, once each, unfolded, and nothing else.
+func parseTrailers(block string) (map[string]string, string) {
+	if !strings.Contains("\n"+block, "\n"+TrailerCheck) {
+		return nil, "missing-trailers"
+	}
+	t := map[string]string{}
+	for _, line := range strings.Split(block, "\n") {
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			return nil, "folded-trailer"
+		}
+		key, val, ok := strings.Cut(line, ": ")
+		if !ok || (key != TrailerCheck && key != TrailerOf && key != TrailerTool) {
+			return nil, "unexpected-trailers"
+		}
+		if _, dup := t[key]; dup {
+			return nil, "duplicate-trailer"
+		}
+		if val = strings.TrimSpace(val); val == "" {
+			return nil, "missing-trailers"
+		}
+		t[key] = val
+	}
+	if len(t) != 3 {
+		return nil, "missing-trailers"
+	}
+	return t, ""
+}
+
+// AllValid reports whether every status is Valid.
+func AllValid(statuses map[string]string) bool {
+	for _, s := range statuses {
+		if s != Valid {
+			return false
+		}
+	}
+	return true
+}
+
+// isEmpty reports whether a single-parent commit leaves its parent's tree as is.
+func isEmpty(dir string, c commit, trees map[string]string) (bool, error) {
+	if len(c.parents) != 1 {
+		return false, nil
+	}
+	p := c.parents[0]
+	pt, ok := trees[p]
+	if !ok {
+		var err error
+		if pt, err = git(dir, "rev-parse", p+"^{tree}"); err != nil {
+			return false, err
+		}
+		trees[p] = pt
+	}
+	return pt == c.tree, nil
+}
+
+// history lists commits for a `git log` range. Structure (commit, tree,
+// parents) comes from output that holds only object IDs, one commit per line.
+// Subjects come from a second, NUL-separated listing that must match the first
+// commit for commit; git refuses NUL in messages, so a mismatch means a forged
+// object and fails closed. Every log here turns off signature and notes output,
+// which user config can switch on.
+func history(dir string, args ...string) ([]commit, error) {
+	out, err := gitRaw(dir, append([]string{"log", "--no-show-signature", "--no-notes", "--format=%H %T %P"}, args...)...)
+	if err != nil {
+		return nil, err
+	}
+	var commits []commit
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			return nil, fmt.Errorf("chain: malformed git log line %q", line)
+		}
+		for _, id := range f {
+			if !isOID(id) {
+				return nil, fmt.Errorf("chain: malformed object id %q in git log", id)
+			}
+		}
+		commits = append(commits, commit{sha: f[0], tree: f[1], parents: f[2:]})
+	}
+
+	out, err = gitRaw(dir, append([]string{"log", "--no-show-signature", "--no-notes", "--encoding=UTF-8", "-z", "--format=%H %s"}, args...)...)
+	if err != nil {
+		return nil, err
+	}
+	recs := strings.Split(strings.TrimRight(out, "\x00"), "\x00")
+	if out == "" {
+		recs = nil
+	}
+	if len(recs) != len(commits) {
+		return nil, fmt.Errorf("chain: %d subjects for %d commits; refusing a history that does not parse cleanly", len(recs), len(commits))
+	}
+	for i, rec := range recs {
+		sha, subject, _ := strings.Cut(rec, " ")
+		if sha != commits[i].sha {
+			return nil, fmt.Errorf("chain: subject listing out of step at %s; refusing", commits[i].sha)
+		}
+		commits[i].subject = subject
+	}
+	return commits, nil
+}
+
+// message returns one commit's message after its first line, byte for byte
+// from the commit object. `git log --format=%b` would drop leading blank and
+// space-only lines, which then escape the line limit.
+func message(dir, sha string) (subject, rest string, err error) {
+	obj, err := gitRaw(dir, "cat-file", "commit", sha)
+	if err != nil {
+		return "", "", err
+	}
+	_, msg, _ := strings.Cut(obj, "\n\n") // headers end at the first blank line
+	subject, rest, _ = strings.Cut(msg, "\n")
+	return subject, rest, nil
+}
+
+// refuseShallow refuses a shallow clone: git reports its boundary commits as
+// having no parents, so a check at the boundary would read as code.
+func refuseShallow(dir string) error {
+	if s, err := git(dir, "rev-parse", "--is-shallow-repository"); err != nil {
+		return err
+	} else if s == "true" {
+		return errors.New("shallow clone: run git fetch --unshallow first")
+	}
+	return nil
+}
+
+// isOID reports whether s is a full SHA-1 or SHA-256 object ID in hex.
+func isOID(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// localEnv is git's repository-location variables (git rev-parse
+// --local-env-vars). A git hook exports them, and they override -C.
+var localEnv = map[string]bool{
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES": true, "GIT_CONFIG": true, "GIT_CONFIG_PARAMETERS": true,
+	"GIT_CONFIG_COUNT": true, "GIT_OBJECT_DIRECTORY": true, "GIT_DIR": true, "GIT_WORK_TREE": true,
+	"GIT_IMPLICIT_WORK_TREE": true, "GIT_GRAFT_FILE": true, "GIT_INDEX_FILE": true,
+	"GIT_NO_REPLACE_OBJECTS": true, "GIT_REPLACE_REF_BASE": true, "GIT_PREFIX": true,
+	"GIT_SHALLOW_FILE": true, "GIT_COMMON_DIR": true,
+}
+
+// GitEnv is this process's environment without git's repository-location
+// variables, so a git run with -C reads the repository it names even when
+// tardis is started from a hook in another one. Legacy grafts
+// (.git/info/grafts), which rewrite parents as replace refs do, are off, and
+// so is git's hint that the graft file is deprecated, which would otherwise
+// print on every run.
+func GitEnv() []string {
+	env := []string{"GIT_GRAFT_FILE=" + os.DevNull}
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); !localEnv[k] {
+			env = append(env, kv)
+		}
+	}
+	// Last, so they win over an inherited GIT_CONFIG_KEY_0 or _VALUE_0.
+	return append(env, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=advice.graftFileDeprecated", "GIT_CONFIG_VALUE_0=false")
+}
+
+func git(dir string, args ...string) (string, error) {
+	out, err := gitRaw(dir, args...)
+	return strings.TrimSpace(out), err
+}
+
+// gitRaw returns git's stdout untouched. Replacement objects are off: a local
+// refs/replace entry must not change what a commit ID means.
+func gitRaw(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"--no-replace-objects", "-C", dir}, args...)...)
+	cmd.Env = GitEnv()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return "", errors.New("git " + args[0] + ": " + msg)
+	}
+	return stdout.String(), nil
+}
