@@ -407,6 +407,7 @@ func indexGitlink(root, q string) bool {
 // refs/replace entry must not change what a commit ID means.
 func gitOut(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"--no-replace-objects", "-C", dir}, args...)...)
+	cmd.Env = chain.GitEnv() // a hook's GIT_DIR must not override -C
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {

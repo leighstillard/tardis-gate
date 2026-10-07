@@ -353,6 +353,18 @@ func TestChangedSeesSubmoduleChangesDespiteConfig(t *testing.T) {
 	}
 }
 
+func TestLoadRevIgnoresAHooksGitDir(t *testing.T) {
+	root := committedSample(t, nil)
+	other := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", other).CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	t.Setenv("GIT_DIR", filepath.Join(other, ".git"))
+	if _, err := LoadRev(root, "main"); err != nil {
+		t.Errorf("LoadRev with a hook's GIT_DIR set: %v", err)
+	}
+}
+
 func TestLoadRevFailsClosedOnAMissingObject(t *testing.T) {
 	// The override's directory object is gone (a partial or damaged clone):
 	// LoadRev must fail rather than read the override as absent.
