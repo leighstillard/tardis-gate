@@ -181,6 +181,18 @@ func TestRunnerRefusesAHeadThatWouldStrandTheBase(t *testing.T) {
 	}
 }
 
+func TestRunnerIgnoresATagNamedLikeTheBase(t *testing.T) {
+	// A tag called origin/main would win over the remote-tracking branch if
+	// the runner named refs in short.
+	r, url, base, check := runnerFixture(t)
+	run(t, "git", "--git-dir="+strings.TrimPrefix(url, "file://"), "tag", "origin/main", check)
+	run(t, "git", "--git-dir="+strings.TrimPrefix(url, "file://"), "tag", "origin/HEAD", check)
+	out, err := r.Resolve(context.Background(), ResolveIn{RepoURL: url, SHA: check})
+	if err != nil || out.BaseID != base {
+		t.Errorf("resolve with tags named origin/main and origin/HEAD: %+v, %v; want base %.7s", out, err, base)
+	}
+}
+
 func TestRunnerRefusesABaseItDidNotChoose(t *testing.T) {
 	r, url, base, check := runnerFixture(t)
 	ctx := context.Background()

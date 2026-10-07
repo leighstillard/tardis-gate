@@ -66,9 +66,19 @@ func TestAuthorReviewRunsNoPolicyFromAnUncheckedBase(t *testing.T) {
 	// at gate commands from just any commit or branch.
 	a, git := authorRepo(t)
 	git("push", "-q", "origin", "feature")
+	// A side branch merged into main: its commit is reachable from main
+	// without main ever having pointed at it.
+	git("checkout", "-q", "-b", "side", "main")
+	git("commit", "-q", "--allow-empty", "-m", "side")
+	side := git("rev-parse", "HEAD")
+	git("checkout", "-q", "main")
+	git("merge", "-q", "--no-ff", "-m", "merge side", "side")
+	git("push", "-q", "origin", "main")
+	git("checkout", "-q", "feature")
 	for _, in := range []AuthorReviewIn{
 		{Gate: "simplify", Base: "feature", BaseID: git("rev-parse", "feature")},
 		{Gate: "simplify", Base: "main", BaseID: git("rev-parse", "feature")},
+		{Gate: "simplify", Base: "main", BaseID: side},
 	} {
 		in.Code, in.Tip = git("rev-parse", "HEAD"), git("rev-parse", "HEAD")
 		if _, err := a.AuthorReview(context.Background(), in); err == nil || !strings.Contains(err.Error(), "base") {

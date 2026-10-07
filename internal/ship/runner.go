@@ -103,12 +103,15 @@ func (r *Runner) hasPass(key string) (bool, error) {
 	return r.passed[key], err
 }
 
+// Remote refs are always named in full here: a tag called origin/main would
+// otherwise win over the remote-tracking branch.
+
 // checkBase refuses a base the runner did not choose. The workflow, which an
 // author's machine can run, names the base; the runner trusts only
 // base_branch from the manifest on the repository's default branch, and only
 // commits that branch has held.
 func checkBase(ctx context.Context, dir, base, baseID string) error {
-	m, err := manifest.LoadRev(dir, "origin/HEAD")
+	m, err := manifest.LoadRev(dir, "refs/remotes/origin/HEAD")
 	if err != nil {
 		return fmt.Errorf("manifest on the default branch: %w", err)
 	}
@@ -116,7 +119,7 @@ func checkBase(ctx context.Context, dir, base, baseID string) error {
 		return temporal.NewNonRetryableApplicationError(
 			fmt.Sprintf("base %q is not this repository's base branch %q", base, m.BaseBranch), "Malformed", nil)
 	}
-	if _, err := gitOut(ctx, dir, "merge-base", "--is-ancestor", baseID, "origin/"+base); err != nil {
+	if _, err := gitOut(ctx, dir, "merge-base", "--is-ancestor", baseID, "refs/remotes/origin/"+base); err != nil {
 		return temporal.NewNonRetryableApplicationError(baseID+" was never on "+base, "Malformed", nil)
 	}
 	return nil
@@ -181,12 +184,12 @@ func (r *Runner) Resolve(ctx context.Context, in ResolveIn) (ResolveOut, error) 
 	if err != nil {
 		return ResolveOut{}, err
 	}
-	def, err := manifest.LoadRev(dir, "origin/HEAD")
+	def, err := manifest.LoadRev(dir, "refs/remotes/origin/HEAD")
 	if err != nil {
 		return ResolveOut{}, fmt.Errorf("manifest on the default branch: %w", err)
 	}
 	base := def.BaseBranch
-	baseID, err := manifest.CommitID(dir, "origin/"+base)
+	baseID, err := manifest.CommitID(dir, "refs/remotes/origin/"+base)
 	if err != nil {
 		return ResolveOut{}, err
 	}
@@ -345,7 +348,7 @@ func (r *Runner) OpenPR(ctx context.Context, in OpenPRIn) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if now, err := gitOut(ctx, dir, "rev-parse", "origin/"+in.Branch); err != nil {
+	if now, err := gitOut(ctx, dir, "rev-parse", "refs/remotes/origin/"+in.Branch); err != nil {
 		return "", err
 	} else if now != in.Head {
 		return "", temporal.NewNonRetryableApplicationError(
@@ -353,7 +356,7 @@ func (r *Runner) OpenPR(ctx context.Context, in OpenPRIn) (string, error) {
 	}
 	// The gates were resolved on BaseID; a base that moved since may hold a
 	// policy they never ran under.
-	if now, err := gitOut(ctx, dir, "rev-parse", "origin/"+in.Base); err != nil {
+	if now, err := gitOut(ctx, dir, "rev-parse", "refs/remotes/origin/"+in.Base); err != nil {
 		return "", err
 	} else if now != in.BaseID {
 		return "", temporal.NewNonRetryableApplicationError(

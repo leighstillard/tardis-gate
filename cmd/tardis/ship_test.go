@@ -89,6 +89,10 @@ func TestRepoIDKeepsRepositoriesApart(t *testing.T) {
 	if !strings.HasPrefix(a, "other/widget-") {
 		t.Errorf("repoID = %q, want other/widget-<hash>", a)
 	}
+	// These two share their first 32 bits of SHA-256.
+	if repoID("https://git.example/team/35006/widget.git") == repoID("https://git.example/team/150224/widget.git") {
+		t.Error("two remotes share an ID")
+	}
 	if repoID("https://evilgithub.com/owner/repo") == "owner/repo" {
 		t.Error("a non-GitHub host was read as GitHub")
 	}

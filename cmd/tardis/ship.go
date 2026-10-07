@@ -115,7 +115,7 @@ func repoID(remoteURL string) string {
 		}
 	}
 	sum := sha256.Sum256([]byte(remoteURL))
-	return "other/" + path.Base(filepath.ToSlash(u)) + "-" + hex.EncodeToString(sum[:4])
+	return "other/" + path.Base(filepath.ToSlash(u)) + "-" + hex.EncodeToString(sum[:16]) // 128 bits: no two remotes share a run
 }
 
 func request(args []string, stdout, stderr io.Writer) int {

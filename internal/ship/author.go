@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -103,8 +104,15 @@ func (a *Author) checkBase(ctx context.Context, base, baseID string) error {
 	if base != m.BaseBranch {
 		return malformed(fmt.Sprintf("base %q is not %s's base branch %q", base, a.Remote, m.BaseBranch))
 	}
-	if _, err := gitOut(ctx, a.Dir, "merge-base", "--is-ancestor", baseID, "refs/remotes/"+a.Remote+"/"+base); err != nil {
-		return malformed("base commit " + baseID + " was never on " + a.Remote + "/" + base)
+	// The base branch itself pointed at baseID: it is on the branch's first-
+	// parent line, not merely reachable, as a merged branch's commits are.
+	// ponytail: the last 1000 base commits; an older base is refused.
+	line1, err := gitOut(ctx, a.Dir, "rev-list", "--first-parent", "--max-count=1000", "refs/remotes/"+a.Remote+"/"+base)
+	if err != nil {
+		return err
+	}
+	if !slices.Contains(strings.Fields(line1), baseID) {
+		return malformed("base commit " + baseID + " was never " + a.Remote + "/" + base + " itself")
 	}
 	return nil
 }
