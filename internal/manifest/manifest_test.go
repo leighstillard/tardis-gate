@@ -137,6 +137,7 @@ func TestGateValidation(t *testing.T) {
 		"name differs": {"name: other\nrun: [make]\ntimeout: 1m\n", `name is "other", want "lint"`},
 		"bad differ":   {"name: lint\nrun: [make]\ntimeout: 1m\nmust_differ_from: me\n", "must_differ_from"},
 		"neg retry":    {"name: lint\nrun: [make]\ntimeout: 1m\nretry: -1\n", "retry must not be negative"},
+		"huge retry":   {"name: lint\nrun: [make]\ntimeout: 1m\nretry: 4294967295\n", "retry must be at most 100"},
 		"unknown key":  {"name: lint\nrun: [make]\ntimeout: 1m\nrunn: [x]\n", "runn"},
 	} {
 		root := copySample(t, map[string]string{ConfigPath: cfg, ".tardis/gates/lint/gate.yml": tc.yml})

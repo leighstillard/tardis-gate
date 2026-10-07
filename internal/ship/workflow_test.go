@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	enumspb "go.temporal.io/api/enums/v1"
 	"reflect"
 	"strings"
 	"sync"
@@ -439,10 +440,13 @@ func TestAbandonedAfterAWeekWithoutAFix(t *testing.T) {
 }
 
 func TestReasonNamesDeadRunner(t *testing.T) {
-	if got := reason(temporal.NewHeartbeatTimeoutError()); got != "runner died" {
+	if got := reason(temporal.NewHeartbeatTimeoutError(), "runner"); got != "runner died" {
 		t.Errorf("reason = %q", got)
 	}
-	if got := reason(fmt.Errorf("boom")); got != "boom" {
+	if got := reason(temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_START_TO_CLOSE, nil), "author"); got != "took longer than its time limit" {
+		t.Errorf("reason = %q", got)
+	}
+	if got := reason(fmt.Errorf("boom"), "runner"); got != "boom" {
 		t.Errorf("reason = %q", got)
 	}
 }

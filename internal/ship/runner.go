@@ -161,11 +161,25 @@ func (r *Runner) sync(ctx context.Context, repoURL string) (string, error) {
 	}
 	sum := sha256.Sum256([]byte(repoURL))
 	dir := filepath.Join(r.WorkDir, hex.EncodeToString(sum[:8]))
-	if _, err := os.Stat(filepath.Join(dir, ".git")); errors.Is(err, os.ErrNotExist) {
+	// A clone killed half way must not poison the cache: a clone that is not
+	// this repository's is replaced, and a new one is made aside and moved
+	// into place only once complete.
+	if url, err := gitOut(ctx, dir, "remote", "get-url", "origin"); err != nil || url != repoURL {
 		if err := os.MkdirAll(r.WorkDir, 0o700); err != nil {
 			return "", err
 		}
-		if _, err := gitOut(ctx, "", "clone", "-q", "--no-checkout", repoURL, dir); err != nil {
+		tmp, err := os.MkdirTemp(r.WorkDir, ".clone-")
+		if err != nil {
+			return "", err
+		}
+		if _, err := gitOut(ctx, "", "clone", "-q", "--no-checkout", repoURL, tmp); err != nil {
+			os.RemoveAll(tmp)
+			return "", err
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			return "", err
+		}
+		if err := os.Rename(tmp, dir); err != nil {
 			return "", err
 		}
 	}

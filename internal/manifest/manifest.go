@@ -414,6 +414,8 @@ func loadGate(read readFunc, ref GateRef) (Gate, error) {
 	}
 	if g.Retry < 0 {
 		errs = append(errs, errors.New("retry must not be negative"))
+	} else if g.Retry > 100 { // and a huge one would wrap to "no limit"
+		errs = append(errs, errors.New("retry must be at most 100"))
 	}
 	if g.MustDifferFrom != "" && g.MustDifferFrom != "author" {
 		errs = append(errs, fmt.Errorf("must_differ_from is %q; only \"author\" is supported", g.MustDifferFrom))

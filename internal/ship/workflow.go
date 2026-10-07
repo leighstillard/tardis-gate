@@ -3,6 +3,7 @@ package ship
 import (
 	"errors"
 	"fmt"
+	enumspb "go.temporal.io/api/enums/v1"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -144,7 +145,7 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 			var ae *temporal.ApplicationError
 			moved := errors.As(err, &ae) && (ae.Type() == "BranchMoved" || ae.Type() == "BaseMoved")
 			if err != nil && !moved {
-				notify(pctx, authorQ, Event{Kind: "failed", Gate: "open-pr", SHA: res.Tip, Detail: reason(err)})
+				notify(pctx, authorQ, Event{Kind: "failed", Gate: "open-pr", SHA: res.Tip, Detail: reason(err, "runner")})
 				return "", err
 			}
 			if !moved {
@@ -203,7 +204,7 @@ func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
 	var res ResolveOut
 	if err := workflow.ExecuteActivity(runnerOpts(ctx, 5*time.Minute), ActResolve,
 		ResolveIn{RepoURL: in.RepoURL, SHA: head}).Get(ctx, &res); err != nil {
-		return stop("resolve", "failed", reason(err), head)
+		return stop("resolve", "failed", reason(err, "runner"), head)
 	}
 	if in.Branch == res.Base {
 		return stop("resolve", "failed", in.Branch+" is the base branch; ship from a feature branch", head)
@@ -216,12 +217,12 @@ func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
 		names = append(names, g.Name)
 		if err := workflow.ExecuteActivity(gateRetries(authorOpts(ctx, authorQ, g.Timeout), g.Retry), ActAuthorReview,
 			AuthorReviewIn{Gate: g.Name, Base: res.Base, BaseID: res.BaseID, Code: head, Tip: tip}).Get(ctx, &tip); err != nil {
-			return stop(g.Name, "failed", "author review: "+reason(err), tip)
+			return stop(g.Name, "failed", "author review: "+reason(err, "author"), tip)
 		}
 		var st map[string]string
 		if err := workflow.ExecuteActivity(runnerOpts(ctx, 5*time.Minute), ActAttest,
 			AttestIn{RepoURL: in.RepoURL, BaseID: res.BaseID, Tip: tip, Gates: []string{g.Name}}).Get(ctx, &st); err != nil {
-			return stop(g.Name, "failed", reason(err), tip)
+			return stop(g.Name, "failed", reason(err, "runner"), tip)
 		}
 		if st[g.Name] != "valid" {
 			return stop(g.Name, "rejected", "check commit "+st[g.Name], tip)
@@ -229,7 +230,7 @@ func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
 		var v Verdict
 		if err := workflow.ExecuteActivity(gateRetries(runnerOpts(ctx, g.Timeout), g.Retry), ActRerun,
 			RerunIn{RepoURL: in.RepoURL, Base: res.Base, BaseID: res.BaseID, Tip: tip, Gate: g.Name}).Get(ctx, &v); err != nil {
-			return stop(g.Name, "failed", reason(err), tip)
+			return stop(g.Name, "failed", reason(err, "runner"), tip)
 		}
 		if !v.Pass {
 			return stop(g.Name, "rejected", v.Reason, tip)
@@ -241,7 +242,7 @@ func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
 	var st map[string]string
 	if err := workflow.ExecuteActivity(runnerOpts(ctx, 5*time.Minute), ActAttest,
 		AttestIn{RepoURL: in.RepoURL, BaseID: res.BaseID, Tip: tip, Gates: names}).Get(ctx, &st); err != nil {
-		return stop("chain", "failed", reason(err), tip)
+		return stop("chain", "failed", reason(err, "runner"), tip)
 	}
 	for _, n := range names {
 		if st[n] != "valid" {
@@ -253,18 +254,22 @@ func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
 	for _, n := range names {
 		// No PR without its checks: a refused or failed success stops the pass.
 		if err := postCheck(ctx, in, res.Base, res.BaseID, tip, n, "success", "").Get(ctx, nil); err != nil {
-			return stop(n, "failed", "posting the success check: "+reason(err), tip)
+			return stop(n, "failed", "posting the success check: "+reason(err, "runner"), tip)
 		}
 	}
 	return outcome{Tip: tip, Base: res.Base, BaseID: res.BaseID}
 }
 
-// reason turns an activity error into words for the author. A timeout means
-// the worker that should have answered is gone.
-func reason(err error) string {
+// reason turns an activity error from side ("runner" or "author") into words
+// for the author. A timeout means that side is gone, unless the work simply
+// ran past its own time limit.
+func reason(err error, side string) string {
 	var te *temporal.TimeoutError
 	if errors.As(err, &te) {
-		return "runner died"
+		if te.TimeoutType() == enumspb.TIMEOUT_TYPE_START_TO_CLOSE {
+			return "took longer than its time limit"
+		}
+		return side + " died" // stopped heartbeating, or nothing was polling
 	}
 	var ae *temporal.ApplicationError
 	if errors.As(err, &ae) {

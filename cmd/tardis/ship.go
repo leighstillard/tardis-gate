@@ -255,7 +255,7 @@ func wait(args []string, stdout, stderr io.Writer) int {
 // event from the current pass: 0 when the PR is open, 1 when a gate rejected
 // or failed.
 func attach(c client.Client, wfID, repo, remote, branch, tool string, stdout, stderr io.Writer) int {
-	events := make(chan ship.Event, 1)
+	events := make(chan ship.Event, 8)
 	a := &ship.Author{Dir: repo, Remote: remote, Branch: branch, Tool: tool, Exec: executor.Local{}, Out: stdout, Events: events}
 
 	wfw := workflowWorker(c)

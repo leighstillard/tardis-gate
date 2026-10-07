@@ -254,12 +254,15 @@ func (a *Author) clean(ctx context.Context) error {
 }
 
 // Notify prints one event for the author.
-func (a *Author) Notify(_ context.Context, e Event) error {
+func (a *Author) Notify(ctx context.Context, e Event) error {
 	fmt.Fprintln(a.Out, e)
 	if e.Terminal() && a.Events != nil {
+		// Wait rather than drop: a redelivered old notice must not crowd
+		// out the current one.
 		select {
 		case a.Events <- e:
-		default:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 	return nil

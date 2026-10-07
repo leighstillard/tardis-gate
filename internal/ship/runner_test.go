@@ -2,6 +2,8 @@ package ship
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -255,6 +257,19 @@ func TestRunnerLockGivesUpWithItsContext(t *testing.T) {
 	defer cancel()
 	if _, err := r.lock(ctx, url); err == nil {
 		t.Error("a second lock on a held repository did not give up with its context")
+	}
+}
+
+func TestRunnerRecoversFromAnInterruptedClone(t *testing.T) {
+	// A clone killed half way leaves a .git behind; the runner must not
+	// keep failing on it.
+	r, url, base, check := runnerFixture(t)
+	sum := sha256.Sum256([]byte(url))
+	if err := os.MkdirAll(filepath.Join(r.WorkDir, hex.EncodeToString(sum[:8]), ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := r.Resolve(context.Background(), ResolveIn{RepoURL: url, SHA: check}); err != nil || out.BaseID != base {
+		t.Errorf("resolve over a broken clone: %+v, %v", out, err)
 	}
 }
 
