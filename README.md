@@ -156,8 +156,7 @@ Each spec is one page. Its acceptance checks are commands you can run.
 
 ## Install
 
-Use a tagged release, never a checkout. tardis needs git 2.38 or newer. On a developer
-machine:
+Use a tagged release, never a checkout. On a developer machine:
 
 ```bash
 go install github.com/leighstillard/tardis-gate/cmd/tardis@v0.1.0

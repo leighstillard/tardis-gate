@@ -21,8 +21,8 @@ with a `gate.yml`, and one command resolves the ordered gate list a given diff m
   resolved on; -evidence `--gates` takes it as is, refusing it once either has moved or
   if base's manifest no longer resolves the same list.
   `chain verify --manifest` resolves and verifies on the same commit IDs in one call.
-  Policy comes from base; head's manifest must still load, so merging it can't strand
-  base. A diff touching `.tardis/`, a gate's dir or the runbook gets every gate; keep a
+  Policy comes from base; head must contain base (rebase first), so its checks postdate
+  base's policy, and head's own manifest must load, so merging it can't strand base. A diff touching `.tardis/`, a gate's dir or the runbook gets every gate; keep a
   gate's scripts in its dir, as files elsewhere are not treated as policy. Globs: `*`, `?`, `**`; a trailing `/**` also matches the directory itself (a
   changed submodule).
 - Touches: `gates/`, `internal/manifest`, `cmd/tardis`. Does not touch: Temporal, GitHub

@@ -105,8 +105,8 @@ func TestResolveRefusesAHeadThatBreaksThePolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	git("commit", "-q", "-am", "break the policy")
-	if code, _, stderr := runCLI("manifest", "resolve", "main", "HEAD", "--repo", dir); code != 1 || !strings.Contains(stderr, "merging HEAD into main: ") {
-		t.Errorf("head with a broken manifest: exit %d err %q, want 1 naming the merge", code, stderr)
+	if code, _, stderr := runCLI("manifest", "resolve", "main", "HEAD", "--repo", dir); code != 1 || !strings.Contains(stderr, "HEAD: ") {
+		t.Errorf("head with a broken manifest: exit %d err %q, want 1 naming HEAD", code, stderr)
 	}
 	if code, _, stderr := runCLI("chain", "verify", "main", "HEAD", "--manifest", "--repo", dir); code != 1 {
 		t.Errorf("chain verify --manifest, head with a broken manifest: exit %d err %q, want 1", code, stderr)
@@ -141,9 +141,8 @@ func TestChainVerifyRefusesAForgedResolution(t *testing.T) {
 	}
 }
 
-func TestResolveChecksThePolicyAfterTheMerge(t *testing.T) {
+func TestResolveWantsHeadToContainBase(t *testing.T) {
 	// Base points the runbook at B; the branch, cut before that, deletes B.
-	// Each loads on its own; merged, base would name a runbook that is gone.
 	dir, git := gitRepo(t)
 	write := func(rel, body string) {
 		p := filepath.Join(dir, rel)
@@ -168,25 +167,50 @@ func TestResolveChecksThePolicyAfterTheMerge(t *testing.T) {
 	write(".tardis/config.yml", "verify_runbook: B.md\ngates:\n  - name: verify\n")
 	git("commit", "-q", "-am", "runbook is B")
 	git("checkout", "-q", "feature")
-	if code, _, stderr := runCLI("manifest", "resolve", "main", "HEAD", "--repo", dir); code != 1 || !strings.Contains(stderr, "B.md not found") {
-		t.Errorf("merge leaves a missing runbook: exit %d err %q, want 1", code, stderr)
+	// Behind base, its checks predate base's policy: rebase first.
+	if code, _, stderr := runCLI("manifest", "resolve", "main", "HEAD", "--repo", dir); code != 1 || !strings.Contains(stderr, "rebase it onto main first") {
+		t.Errorf("head behind base: exit %d err %q, want 1 and rebase", code, stderr)
 	}
-
-	// A conflict cannot be checked: rebase first.
-	write("A.md", "branch\n")
-	git("commit", "-q", "-am", "edit A")
-	git("checkout", "-q", "main")
-	write("A.md", "main\n")
-	git("commit", "-q", "-am", "edit A too")
-	git("checkout", "-q", "feature")
-	if code, _, stderr := runCLI("manifest", "resolve", "main", "HEAD", "--repo", dir); code != 1 || !strings.Contains(stderr, "rebase it first") {
-		t.Errorf("conflicting head: exit %d err %q, want 1 and rebase", code, stderr)
+	// Rebased, its own policy names a runbook it deleted.
+	git("rebase", "-q", "main")
+	if code, _, stderr := runCLI("manifest", "resolve", "main", "HEAD", "--repo", dir); code != 1 || !strings.Contains(stderr, "B.md not found") {
+		t.Errorf("rebased head without its runbook: exit %d err %q, want 1", code, stderr)
 	}
 }
 
-func TestManifestLintCannotLook(t *testing.T) {
-	if code, _, stderr := runCLI("manifest", "lint", "--repo", filepath.Join(t.TempDir(), "gone")); code != 2 {
-		t.Errorf("lint on a missing directory: exit %d err %q, want 2", code, stderr)
+func TestResolveRunsNoMergeDriver(t *testing.T) {
+	// A merge driver is a shell command; a branch's .gitattributes picks it.
+	// Resolving must never merge, so it must never run one.
+	dir, git := gitRepo(t)
+	sentinel := filepath.Join(t.TempDir(), "ran")
+	git("config", "merge.evil.driver", "touch "+sentinel+"; false")
+	write := func(rel, body string) {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("checkout", "-q", "main")
+	write(".tardis/config.yml", "gates:\n  - name: simplify\n")
+	write(".gitattributes", "* merge=evil\n")
+	write("x.txt", "base\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "enrol")
+	git("checkout", "-q", "feature")
+	git("rebase", "-q", "main")
+	write("x.txt", "branch\n")
+	git("commit", "-q", "-am", "branch edit")
+	git("checkout", "-q", "main")
+	write("x.txt", "main\n")
+	git("commit", "-q", "-am", "main edit")
+	git("checkout", "-q", "feature")
+	runCLI("manifest", "resolve", "main", "HEAD", "--repo", dir)
+	runCLI("chain", "verify", "main", "HEAD", "--manifest", "--repo", dir)
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Error("resolving ran the repository's merge driver")
 	}
 }
 

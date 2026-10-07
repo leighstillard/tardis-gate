@@ -276,10 +276,9 @@ func unmoved(repo string, refs []string, pinned [2]string) error {
 
 // resolveGates resolves base and head once, so policy and diff come from the
 // same revisions, and returns their IDs and the gates that apply. The policy
-// comes from base, so a branch cannot drop the gates it must pass; the policy
-// after merging head must load too, or the merge would leave the base unable
-// to resolve anything, with no PR path to repair it. On error, code is 1 for
-// a bad manifest and 2 otherwise.
+// comes from base, so a branch cannot drop the gates it must pass. Head must
+// contain base and its own policy must load (manifest.CheckHead). On error,
+// code is 1 for a bad manifest or a head to rebase, and 2 otherwise.
 func resolveGates(repo, base, head string) (ids [2]string, names []string, code int, err error) {
 	for i, rev := range []string{base, head} {
 		if ids[i], err = manifest.CommitID(repo, rev); err != nil {
@@ -292,13 +291,13 @@ func resolveGates(repo, base, head string) (ids [2]string, names []string, code 
 	} else if err != nil {
 		return ids, nil, policyCode(err), fmt.Errorf("%s: %s", base, strings.ReplaceAll(err.Error(), "\n", "; "))
 	}
-	err = manifest.CheckMerge(repo, ids[0], ids[1])
-	if errors.Is(err, manifest.ErrNotEnrolled) {
-		return ids, nil, 1, fmt.Errorf("merging %s would remove %s; unenrolment is an operator step that tardis does not gate", head, manifest.ConfigPath)
-	} else if errors.Is(err, manifest.ErrConflict) {
-		return ids, nil, 1, fmt.Errorf("%s does not merge cleanly into %s; rebase it first", head, base)
+	err = manifest.CheckHead(repo, ids[0], ids[1])
+	if errors.Is(err, manifest.ErrBehind) {
+		return ids, nil, 1, fmt.Errorf("%s does not contain %s; rebase it onto %s first", head, base, base)
+	} else if errors.Is(err, manifest.ErrNotEnrolled) {
+		return ids, nil, 1, fmt.Errorf("%s removes %s; unenrolment is an operator step that tardis does not gate", head, manifest.ConfigPath)
 	} else if err != nil {
-		return ids, nil, policyCode(err), fmt.Errorf("merging %s into %s: %s", head, base, strings.ReplaceAll(err.Error(), "\n", "; "))
+		return ids, nil, policyCode(err), fmt.Errorf("%s: %s", head, strings.ReplaceAll(err.Error(), "\n", "; "))
 	}
 	changed, err := manifest.Changed(repo, ids[0], ids[1])
 	if err != nil {
