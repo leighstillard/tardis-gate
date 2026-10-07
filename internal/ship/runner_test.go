@@ -215,16 +215,30 @@ func TestRunnerIgnoresATagNamedLikeTheBase(t *testing.T) {
 	}
 }
 
+func TestAPassFromAReplacedReviewerCountsForNothing(t *testing.T) {
+	r, url, base, check := runnerFixture(t)
+	ctx := context.Background()
+	if v, err := r.Rerun(ctx, RerunIn{RepoURL: url, Base: "main", BaseID: base, Tip: check, Gate: "simplify"}); err != nil || !v.Pass {
+		t.Fatalf("rerun: %+v, %v", v, err)
+	}
+	r.RerunCmd = []string{"sh", "-c", "exit 0", "new reviewer"}
+	if err := r.PostCheck(ctx, CheckIn{RepoURL: url, Base: "main", BaseID: base, SHA: check, Gate: "simplify", Conclusion: "success"}); err == nil {
+		t.Error("a pass from the old reviewer authorised a success under the new one")
+	}
+}
+
 func TestRerunIsNotRepeatedOnceRecorded(t *testing.T) {
 	r, url, base, check := runnerFixture(t)
 	ctx := context.Background()
+	// Passes the first time; rejects if it ever runs again.
+	marker := filepath.Join(t.TempDir(), "ran")
+	r.RerunCmd = []string{"sh", "-c", "test ! -e " + marker + " && touch " + marker}
 	in := RerunIn{RepoURL: url, Base: "main", BaseID: base, Tip: check, Gate: "simplify"}
 	if v, err := r.Rerun(ctx, in); err != nil || !v.Pass {
 		t.Fatalf("rerun: %+v, %v", v, err)
 	}
-	// The retry of an attempt whose completion was lost: a command that
-	// would now reject must not run.
-	r.RerunCmd = []string{"false"}
+	// The retry of an attempt whose completion was lost: the command, which
+	// would now reject, must not run.
 	if v, err := r.Rerun(ctx, in); err != nil || !v.Pass {
 		t.Errorf("retried rerun: %+v, %v; want the recorded pass", v, err)
 	}

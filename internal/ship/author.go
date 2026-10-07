@@ -153,21 +153,35 @@ func (a *Author) review(ctx context.Context, in AuthorReviewIn, base string) err
 		return err
 	}
 
+	// The gate runs in the working copy, so the branch can change what it
+	// runs: it gets no Temporal credentials.
+	var env []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "TEMPORAL_") {
+			env = append(env, kv)
+		}
+	}
 	res, err := a.Exec.Run(ctx, executor.Job{
 		Argv: gate.Run,
 		Dir:  a.Dir,
-		Env: []string{
-			"TARDIS_GATE=" + in.Gate, "TARDIS_BASE=" + base, "TARDIS_HEAD=" + in.Code,
-			"TARDIS_DIFF_FILE=" + diffFile, "TARDIS_RUNBOOK=" + m.VerifyRunbook,
-			"TARDIS_FINDINGS_OUT=" + findings,
-		},
+		Env: append(env,
+			"TARDIS_GATE="+in.Gate, "TARDIS_BASE="+base, "TARDIS_HEAD="+in.Code,
+			"TARDIS_DIFF_FILE="+diffFile, "TARDIS_RUNBOOK="+m.VerifyRunbook,
+			"TARDIS_FINDINGS_OUT="+findings),
+		Clean: true,
 	}, func(string) {})
 	if err != nil {
 		return err
 	}
 	if res.ExitCode != 0 {
+		// What the gate printed stays on this machine: errors go into
+		// Temporal history, which every worker in the namespace can read.
+		cmd := strings.Join(gate.Run, " ")
+		if a.Out != nil {
+			fmt.Fprintf(a.Out, "%s: %s exited %d:\n%s\n", in.Gate, cmd, res.ExitCode, tail(res.Output))
+		}
 		return temporal.NewNonRetryableApplicationError(
-			fmt.Sprintf("%s exited %d: %s", strings.Join(gate.Run, " "), res.ExitCode, tail(res.Output)), "Rejected", nil)
+			fmt.Sprintf("%s exited %d; its output is on the author's machine", cmd, res.ExitCode), "Rejected", nil)
 	}
 	summary, err := os.ReadFile(findings)
 	if err != nil || strings.TrimSpace(string(summary)) == "" {

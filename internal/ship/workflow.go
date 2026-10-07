@@ -17,6 +17,7 @@ const (
 	ScheduleToClose  = 60 * time.Minute
 	AwaitDelivery    = 24 * time.Hour // notifications and check runs wait this long for a worker
 	AwaitFix         = 7 * 24 * time.Hour
+	MaxPasses        = 50 // then the run continues as new, to keep its history bounded
 )
 
 var retry = &temporal.RetryPolicy{
@@ -91,8 +92,14 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 	heads := workflow.GetSignalChannel(ctx, SignalNewHead)
 	authorQ := AuthorQueue(workflow.GetInfo(ctx).WorkflowExecution.ID)
 
-	for {
+	for passes := 0; ; passes++ {
 		head = latest(heads, head)
+		if passes == MaxPasses {
+			// Queued heads are drained above, so the newest goes with it.
+			next := in
+			next.Head = head
+			return "", workflow.NewContinueAsNewError(ctx, Ship, next)
+		}
 		notify(ctx, authorQ, Event{Kind: "started", SHA: head})
 
 		passCtx, cancel := workflow.WithCancel(ctx)
@@ -154,10 +161,12 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 
 		// Rejected or failed: wait for the author to push a fix and ask again.
 		timedOut := false
+		timerCtx, stopTimer := workflow.WithCancel(ctx)
 		wait := workflow.NewSelector(ctx)
 		wait.AddReceive(heads, func(c workflow.ReceiveChannel, _ bool) { c.Receive(ctx, &sig) })
-		wait.AddFuture(workflow.NewTimer(ctx, AwaitFix), func(workflow.Future) { timedOut = true })
+		wait.AddFuture(workflow.NewTimer(timerCtx, AwaitFix), func(workflow.Future) { timedOut = true })
 		wait.Select(ctx)
+		stopTimer() // a head won: the timer must not linger in history
 		if timedOut {
 			return "", temporal.NewApplicationError("no new head within "+AwaitFix.String(), "Abandoned")
 		}

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/leighstillard/tardis-gate/internal/chain"
+	"github.com/leighstillard/tardis-gate/internal/executor"
 )
 
 // authorRepo is a clone of a bare origin with main, enrolled with one gate
@@ -82,6 +83,32 @@ func TestAuthorReviewRunsNoPolicyFromAnUncheckedBase(t *testing.T) {
 		if _, err := a.AuthorReview(context.Background(), in); err == nil || !strings.Contains(err.Error(), "base") {
 			t.Errorf("base %s at %.7s: err = %v, want a refusal", in.Base, in.BaseID, err)
 		}
+	}
+}
+
+func TestAuthorGateGetsNoTemporalKeyAndKeepsItsOutput(t *testing.T) {
+	t.Setenv("TEMPORAL_API_KEY", "sentinel-key")
+	a, git := authorRepo(t)
+	var out strings.Builder
+	a.Exec, a.Out = executor.Local{}, &out
+	git("checkout", "-q", "main")
+	gate := filepath.Join(a.Dir, ".tardis", "gates", "simplify", "gate.yml")
+	if err := os.MkdirAll(filepath.Dir(gate), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gate, []byte("name: simplify\nrun: [sh, -c, 'echo key=$TEMPORAL_API_KEY; printf \"private %s\\\\n\" detail; exit 3']\ntimeout: 1m\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "-A")
+	git("commit", "-q", "-m", "simplify prints")
+	git("push", "-q", "origin", "main")
+	git("checkout", "-q", "feature")
+	_, err := a.AuthorReview(context.Background(), reviewIn(git, "simplify"))
+	if err == nil || strings.Contains(err.Error(), "private detail") || !strings.Contains(err.Error(), "exited 3") {
+		t.Errorf("err = %v; want the exit code without the output", err)
+	}
+	if strings.Contains(out.String(), "sentinel-key") || !strings.Contains(out.String(), "private detail") {
+		t.Errorf("local output %q; want the gate's output, without the Temporal key", out.String())
 	}
 }
 

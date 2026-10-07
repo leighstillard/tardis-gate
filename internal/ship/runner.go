@@ -39,15 +39,16 @@ type Runner struct {
 }
 
 // passKey names what a re-run judged: the gate, the base commit it ran on,
-// and the gate's check commit, which fixes the claim and the code under it.
-// Later checks are empty commits on top, so the final tip of a pass yields
-// the same check commit as the tip the gate was re-run on.
-func passKey(dir, repoURL, gate, baseID, tip string) (string, error) {
+// the gate's check commit, which fixes the claim and the code under it, and
+// the re-run command, so a pass from a reviewer since replaced counts for
+// nothing. Later checks are empty commits on top, so the final tip of a pass
+// yields the same check commit as the tip the gate was re-run on.
+func (r *Runner) passKey(dir, repoURL, gate, baseID, tip string) (string, error) {
 	check, err := chain.CheckCommit(dir, baseID, tip, gate)
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256([]byte(strings.Join([]string{repoURL, gate, baseID, check}, "\x00")))
+	sum := sha256.Sum256([]byte(strings.Join(append([]string{repoURL, gate, baseID, check}, r.RerunCmd...), "\x00")))
 	return hex.EncodeToString(sum[:]), nil
 }
 
@@ -281,7 +282,7 @@ func (r *Runner) Rerun(ctx context.Context, in RerunIn) (Verdict, error) {
 	}
 	// Activities run at least once: a retry after the pass was recorded but
 	// its completion lost gets that pass, not a second, costly review.
-	key, err := passKey(dir, in.RepoURL, in.Gate, in.BaseID, in.Tip)
+	key, err := r.passKey(dir, in.RepoURL, in.Gate, in.BaseID, in.Tip)
 	if err != nil {
 		return Verdict{}, err
 	}
@@ -349,7 +350,7 @@ func (r *Runner) PostCheck(ctx context.Context, in CheckIn) error {
 		if err != nil {
 			return err
 		}
-		key, err := passKey(dir, in.RepoURL, in.Gate, in.BaseID, in.SHA)
+		key, err := r.passKey(dir, in.RepoURL, in.Gate, in.BaseID, in.SHA)
 		if err != nil {
 			return err
 		}
@@ -412,7 +413,7 @@ func (r *Runner) OpenPR(ctx context.Context, in OpenPRIn) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		key, err := passKey(dir, in.RepoURL, g.Name, in.BaseID, in.Head)
+		key, err := r.passKey(dir, in.RepoURL, g.Name, in.BaseID, in.Head)
 		if err != nil {
 			return "", err
 		}

@@ -2,6 +2,7 @@ package ship
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -10,8 +11,10 @@ import (
 	"time"
 
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 )
 
 // fake records every activity call and lets a test script outcomes.
@@ -370,6 +373,26 @@ func TestQueuedSignalsKeepTheNewestHead(t *testing.T) {
 	want := []string{"author:simplify@c1", "rerun:simplify@c1+simplify", "author:simplify@c3", "rerun:simplify@c3+simplify"}
 	if !reflect.DeepEqual(f.calls, want) {
 		t.Errorf("calls\n got %v\nwant %v", f.calls, want)
+	}
+}
+
+func TestContinuesAsNewAfterMaxPasses(t *testing.T) {
+	f := &fake{gates: []string{"simplify"}}
+	f.rerun = func(RerunIn) (Verdict, error) { return Verdict{Reason: "no"}, nil }
+	env := newEnv(t, f)
+	for i := 1; i <= MaxPasses; i++ {
+		env.RegisterDelayedCallback(func() {
+			env.SignalWorkflow(SignalNewHead, NewHead{SHA: fmt.Sprintf("c%d", i+1)})
+		}, time.Duration(i)*time.Hour)
+	}
+	env.ExecuteWorkflow(Ship, in)
+	var can *workflow.ContinueAsNewError
+	if err := env.GetWorkflowError(); !errors.As(err, &can) {
+		t.Fatalf("err = %v; want continue-as-new after %d passes", err, MaxPasses)
+	}
+	var next Input
+	if err := converter.GetDefaultDataConverter().FromPayloads(can.Input, &next); err != nil || next.Head != fmt.Sprintf("c%d", MaxPasses+1) {
+		t.Errorf("continued with %+v, %v; want the newest head", next, err)
 	}
 }
 
