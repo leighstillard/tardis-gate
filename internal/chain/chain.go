@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -288,6 +289,29 @@ func isOID(s string) bool {
 	return true
 }
 
+// localEnv is git's repository-location variables (git rev-parse
+// --local-env-vars). A git hook exports them, and they override -C.
+var localEnv = map[string]bool{
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES": true, "GIT_CONFIG": true, "GIT_CONFIG_PARAMETERS": true,
+	"GIT_CONFIG_COUNT": true, "GIT_OBJECT_DIRECTORY": true, "GIT_DIR": true, "GIT_WORK_TREE": true,
+	"GIT_IMPLICIT_WORK_TREE": true, "GIT_GRAFT_FILE": true, "GIT_INDEX_FILE": true,
+	"GIT_NO_REPLACE_OBJECTS": true, "GIT_REPLACE_REF_BASE": true, "GIT_PREFIX": true,
+	"GIT_SHALLOW_FILE": true, "GIT_COMMON_DIR": true,
+}
+
+// GitEnv is this process's environment without git's repository-location
+// variables, so a git run with -C reads the repository it names even when
+// tardis is started from a hook in another one.
+func GitEnv() []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); !localEnv[k] {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
 func git(dir string, args ...string) (string, error) {
 	out, err := gitRaw(dir, args...)
 	return strings.TrimSpace(out), err
@@ -297,6 +321,7 @@ func git(dir string, args ...string) (string, error) {
 // refs/replace entry must not change what a commit ID means.
 func gitRaw(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"--no-replace-objects", "-C", dir}, args...)...)
+	cmd.Env = GitEnv()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // Vendors is the fixed vocabulary for the first segment of Ship-Check-Tool.
@@ -25,8 +26,10 @@ func CheckTool(tool string) error {
 
 // CheckGateName reports whether gate can name a check commit.
 func CheckGateName(gate string) error {
-	// Commas would split the name in `chain verify --gates a,b`.
-	if gate == "" || strings.ContainsAny(gate, " \t\n/:,") {
+	// Commas would split the name in `chain verify --gates a,b`; whitespace
+	// and control characters would not survive the trailer round trip.
+	bad := func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }
+	if gate == "" || strings.ContainsAny(gate, "/:,") || strings.IndexFunc(gate, bad) >= 0 {
 		return fmt.Errorf("gate %q: must be a non-empty name without spaces, commas, slashes or colons", gate)
 	}
 	return nil
@@ -67,8 +70,8 @@ func Commit(dir, gate, summary, tool string) (string, error) {
 	// written cannot move it onto another branch. A detached HEAD is refused:
 	// a concurrent checkout could reattach it between the read and the CAS.
 	ref, err := git(dir, "symbolic-ref", "-q", "HEAD")
-	if err != nil {
-		return "", errors.New("HEAD is detached; check out the branch under review first")
+	if err != nil || !strings.HasPrefix(ref, "refs/heads/") {
+		return "", errors.New("HEAD is not on a local branch; check out the branch under review first")
 	}
 	before, err := git(dir, "rev-parse", "--verify", ref+"^{commit}")
 	if err != nil {

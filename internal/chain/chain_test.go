@@ -321,6 +321,35 @@ func TestReplaceRefsCannotHideCode(t *testing.T) {
 	want(t, r.verify("simplify"), "simplify", broken("superseded"))
 }
 
+func TestHookEnvironmentDoesNotRedirectGit(t *testing.T) {
+	// Started from a hook in another repository, git would follow GIT_DIR
+	// rather than -C; the chain under r.dir must still be read.
+	r := newRepo(t)
+	other := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", other).CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	r.branch()
+	a := r.code("A")
+	r.check("simplify", a, "ok")
+	t.Setenv("GIT_DIR", filepath.Join(other, ".git"))
+	got, err := Verify(r.dir, "main", "HEAD", []string{"simplify"})
+	if err != nil || got["simplify"] != Valid {
+		t.Errorf("Verify = %v, %v; want simplify valid in r.dir", got, err)
+	}
+}
+
+func TestCommitRefusesANonBranchHead(t *testing.T) {
+	r := newRepo(t)
+	r.branch()
+	r.code("A")
+	r.git("tag", "v1")
+	r.git("symbolic-ref", "HEAD", "refs/tags/v1")
+	if _, err := Commit(r.dir, "simplify", "ok", "anthropic/a/b"); err == nil || !strings.Contains(err.Error(), "local branch") {
+		t.Errorf("err = %v, want a not-on-a-branch refusal", err)
+	}
+}
+
 func TestCommitEncodingDoesNotBreakUnicodeGates(t *testing.T) {
 	r := newRepo(t)
 	r.branch()
@@ -466,7 +495,7 @@ func TestCommitRefusesDetachedHead(t *testing.T) {
 	r.branch()
 	a := r.code("A")
 	r.git("checkout", "-q", "--detach")
-	if _, err := Commit(r.dir, "simplify", "ok", "anthropic/a/b"); err == nil || !strings.Contains(err.Error(), "detached") {
+	if _, err := Commit(r.dir, "simplify", "ok", "anthropic/a/b"); err == nil || !strings.Contains(err.Error(), "local branch") {
 		t.Errorf("err = %v, want a detached-HEAD refusal", err)
 	}
 	if got := r.git("rev-parse", "HEAD"); got != a {
@@ -509,6 +538,7 @@ func TestCommitRefuses(t *testing.T) {
 		"bad gate":      {"sim plify", "s", "anthropic/claude-code/x"},
 		"comma gate":    {"sim,plify", "s", "anthropic/claude-code/x"},
 		"newline tool":  {"simplify", "s", "anthropic/claude-code/x\nShip-Check: verify"},
+		"CR in gate":    {"simplify\r", "s", "anthropic/claude-code/x"},
 	} {
 		if _, err := Commit(r.dir, tc.gate, tc.summary, tc.tool); err == nil {
 			t.Errorf("%s: Commit succeeded, want error", name)
