@@ -46,11 +46,7 @@ func (f *fake) register(env *testsuite.TestWorkflowEnvironment) {
 		if in.Base != "main" || in.BaseID != "b0" {
 			return "", fmt.Errorf("author review got base %q at %q, want the resolved main at b0", in.Base, in.BaseID)
 		}
-		fresh := ""
-		if in.Fresh {
-			fresh = " fresh"
-		}
-		f.log("author:" + in.Gate + "@" + in.Code + fresh)
+		f.log("author:" + in.Gate + "@" + in.Code)
 		return in.Tip + "+" + in.Gate, nil // a new check commit on top
 	})
 	reg(ActAttest, func(_ context.Context, in AttestIn) (map[string]string, error) {
@@ -216,23 +212,14 @@ func TestBranchMovedAtOpenPRTellsTheAuthor(t *testing.T) {
 	}
 }
 
-func TestBaseMovedAtOpenPRReviewsAgain(t *testing.T) {
+func TestBaseMovedAtOpenPRAsksForARebase(t *testing.T) {
+	// A moved base may carry a policy the gates never ran under.
 	f := &fake{gates: []string{"simplify"}, openErr: temporal.NewNonRetryableApplicationError("moved", "BaseMoved", nil)}
 	env := newEnv(t, f)
-	f.onEvent = func(e Event) {
-		if e.Kind == "base-moved" {
-			f.mu.Lock()
-			f.openErr = nil
-			f.mu.Unlock()
-		}
-	}
+	env.RegisterDelayedCallback(func() { env.CancelWorkflow() }, time.Hour) // it waits for a new head
 	env.ExecuteWorkflow(Ship, in)
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"author:simplify@c1", "rerun:simplify@c1+simplify", "author:simplify@c1+simplify fresh", "rerun:simplify@c1+simplify+simplify"}
-	if !reflect.DeepEqual(f.calls, want) || f.openPRs != 2 {
-		t.Errorf("calls %v, OpenPR %d; want the gates again on the same head, then a PR", f.calls, f.openPRs)
+	if !contains(f.events, "open-pr failed: the base moved since the gates ran; rebase onto it and run tardis request again") || f.openPRs != 1 {
+		t.Errorf("events %v, OpenPR %d; want one attempt and a rebase request", f.events, f.openPRs)
 	}
 }
 

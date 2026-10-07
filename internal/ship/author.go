@@ -39,8 +39,7 @@ func (a *Author) AuthorReview(ctx context.Context, in AuthorReviewIn) (string, e
 	if err != nil {
 		return "", err
 	}
-	resumed := tip != in.Tip
-	if resumed {
+	if tip != in.Tip {
 		// A retry after this activity already wrote its check (and perhaps
 		// lost the push or its completion) finds that check on top of the
 		// expected tip: resume from it. Anything else is the branch moving.
@@ -65,7 +64,7 @@ func (a *Author) AuthorReview(ctx context.Context, in AuthorReviewIn) (string, e
 	if err != nil {
 		return "", err
 	}
-	if st[in.Gate] != chain.Valid || in.Fresh && !resumed {
+	if st[in.Gate] != chain.Valid {
 		if err := a.review(ctx, in, base); err != nil {
 			return "", err
 		}

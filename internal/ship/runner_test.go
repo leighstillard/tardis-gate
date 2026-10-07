@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"go.temporal.io/sdk/temporal"
 
@@ -129,8 +130,10 @@ func TestRunnerFollowsTheDefaultBranch(t *testing.T) {
 	g("commit", "-q", "-am", "trunk is the base")
 	g("push", "-q", "origin", "trunk")
 	run(t, "git", "--git-dir="+strings.TrimPrefix(url, "file://"), "symbolic-ref", "HEAD", "refs/heads/trunk")
-	if out, err := r.Resolve(ctx, ResolveIn{RepoURL: url, SHA: check}); err != nil || out.Base != "trunk" {
-		t.Errorf("resolve after the default branch moved: %+v, %v; want base trunk", out, err)
+	// The head was cut from main, so the runner, now reading trunk's
+	// policy, wants it rebased onto trunk.
+	if _, err := r.Resolve(ctx, ResolveIn{RepoURL: url, SHA: check}); err == nil || !strings.Contains(err.Error(), "rebase onto trunk") {
+		t.Errorf("resolve after the default branch moved: %v; want trunk as the base", err)
 	}
 }
 
@@ -160,8 +163,8 @@ func TestOpenPRRefusesAMovedBase(t *testing.T) {
 	}
 	// A pass earned on the old base opens nothing on the new one.
 	now := strings.TrimSpace(run(t, "git", "-C", w, "rev-parse", "HEAD"))
-	if err := open(now); !errors.As(err, &ae) || ae.Type() != "Rejected" {
-		t.Errorf("open on the new base with only an old-base pass: err = %v; want Rejected", err)
+	if err := open(now); err == nil {
+		t.Error("a pass on the old base opened a PR on the new one")
 	}
 }
 
@@ -209,6 +212,35 @@ func TestRunnerIgnoresATagNamedLikeTheBase(t *testing.T) {
 	out, err := r.Resolve(context.Background(), ResolveIn{RepoURL: url, SHA: check})
 	if err != nil || out.BaseID != base {
 		t.Errorf("resolve with tags named origin/main and origin/HEAD: %+v, %v; want base %.7s", out, err, base)
+	}
+}
+
+func TestRerunIsNotRepeatedOnceRecorded(t *testing.T) {
+	r, url, base, check := runnerFixture(t)
+	ctx := context.Background()
+	in := RerunIn{RepoURL: url, Base: "main", BaseID: base, Tip: check, Gate: "simplify"}
+	if v, err := r.Rerun(ctx, in); err != nil || !v.Pass {
+		t.Fatalf("rerun: %+v, %v", v, err)
+	}
+	// The retry of an attempt whose completion was lost: a command that
+	// would now reject must not run.
+	r.RerunCmd = []string{"false"}
+	if v, err := r.Rerun(ctx, in); err != nil || !v.Pass {
+		t.Errorf("retried rerun: %+v, %v; want the recorded pass", v, err)
+	}
+}
+
+func TestRunnerLockGivesUpWithItsContext(t *testing.T) {
+	r, url, _, _ := runnerFixture(t)
+	unlock, err := r.lock(context.Background(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := r.lock(ctx, url); err == nil {
+		t.Error("a second lock on a held repository did not give up with its context")
 	}
 }
 

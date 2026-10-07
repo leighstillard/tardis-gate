@@ -47,7 +47,7 @@ type NewHead struct{ SHA string }
 
 // Event is one thing the author hears about.
 type Event struct {
-	Kind   string // started | passed | rejected | failed | base-moved | pr-created | completed
+	Kind   string // started | passed | rejected | failed | pr-created | completed
 	Gate   string
 	SHA    string
 	Detail string
@@ -106,8 +106,5 @@ type (
 	RerunIn        struct{ RepoURL, Base, BaseID, Tip, Gate string }
 	CheckIn        struct{ RepoURL, Base, BaseID, SHA, Gate, Conclusion, Summary string }
 	OpenPRIn       struct{ RepoURL, Branch, Base, BaseID, Head string }
-	AuthorReviewIn struct {
-		Gate, Base, BaseID, Code, Tip string
-		Fresh                         bool // review even if a valid check is already there
-	}
+	AuthorReviewIn struct{ Gate, Base, BaseID, Code, Tip string }
 )

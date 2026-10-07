@@ -2,7 +2,6 @@ package ship
 
 import (
 	"context"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/leighstillard/tardis-gate/internal/chain"
-	"github.com/leighstillard/tardis-gate/internal/executor"
 )
 
 // authorRepo is a clone of a bare origin with main, enrolled with one gate
@@ -84,42 +82,6 @@ func TestAuthorReviewRunsNoPolicyFromAnUncheckedBase(t *testing.T) {
 		if _, err := a.AuthorReview(context.Background(), in); err == nil || !strings.Contains(err.Error(), "base") {
 			t.Errorf("base %s at %.7s: err = %v, want a refusal", in.Base, in.BaseID, err)
 		}
-	}
-}
-
-func TestAuthorReviewFreshReviewsAgain(t *testing.T) {
-	// After the base moved, a valid check made under the old policy is not
-	// enough: the gate runs again and a new check goes on top.
-	a, git := authorRepo(t)
-	a.Exec, a.Out = executor.Local{}, io.Discard
-	git("checkout", "-q", "main")
-	gate := filepath.Join(a.Dir, ".tardis", "gates", "simplify", "gate.yml")
-	if err := os.MkdirAll(filepath.Dir(gate), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(gate, []byte("name: simplify\nrun: [sh, -c, 'echo \"- low: looked\" > \"$TARDIS_FINDINGS_OUT\"']\ntimeout: 1m\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	git("add", "-A")
-	git("commit", "-q", "-m", "new simplify command")
-	git("push", "-q", "origin", "main")
-	git("checkout", "-q", "feature")
-	code := git("rev-parse", "HEAD")
-	check, err := chain.Commit(a.Dir, "simplify", "ok", a.Tool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	in := AuthorReviewIn{Gate: "simplify", Base: "main", BaseID: git("rev-parse", "main"), Code: code, Tip: check}
-	if tip, err := a.AuthorReview(context.Background(), in); err != nil || tip != check {
-		t.Fatalf("not fresh: tip %.7s, %v; want the existing check %.7s reused", tip, err, check)
-	}
-	in.Fresh = true
-	tip, err := a.AuthorReview(context.Background(), in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tip == check || git("rev-parse", tip+"^") != check || git("log", "-1", "--format=%s", tip) != "ship-check: simplify" {
-		t.Errorf("fresh: tip %.7s; want a new simplify check on top of %.7s", tip, check)
 	}
 }
 

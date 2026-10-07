@@ -32,8 +32,8 @@ type Runner struct {
 	Log      io.Writer
 
 	mu     sync.Mutex
-	locks  map[string]*sync.Mutex // one per repository URL, guarding its clone
-	passed map[string]bool        // passKey of every re-run this runner passed; also in WorkDir/passes
+	locks  map[string]chan struct{} // one per repository URL, guarding its clone
+	passed map[string]bool          // passKey of every re-run this runner passed; also in WorkDir/passes
 	// ponytail: one runner host owns its passes file; replicas would need a
 	// shared store.
 }
@@ -128,20 +128,25 @@ func checkBase(ctx context.Context, dir, base, baseID string) error {
 }
 
 // lock serialises work on one repository's clone, so a slow fetch of one
-// repository never holds up another.
-func (r *Runner) lock(repoURL string) (unlock func()) {
+// repository never holds up another. Waiting ends with ctx: an activity that
+// timed out must not queue behind one Temporal has already given up on.
+func (r *Runner) lock(ctx context.Context, repoURL string) (unlock func(), err error) {
 	r.mu.Lock()
 	if r.locks == nil {
-		r.locks = map[string]*sync.Mutex{}
+		r.locks = map[string]chan struct{}{}
 	}
 	l := r.locks[repoURL]
 	if l == nil {
-		l = &sync.Mutex{}
+		l = make(chan struct{}, 1)
 		r.locks[repoURL] = l
 	}
 	r.mu.Unlock()
-	l.Lock()
-	return l.Unlock
+	select {
+	case l <- struct{}{}:
+		return func() { <-l }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // sync clones the repository once and fetches its branches; reads go through
@@ -181,7 +186,11 @@ func (r *Runner) sync(ctx context.Context, repoURL string) (string, error) {
 // request brings: a branch cannot pick the policy it is held to.
 func (r *Runner) Resolve(ctx context.Context, in ResolveIn) (ResolveOut, error) {
 	defer heartbeat(ctx)()
-	defer r.lock(in.RepoURL)()
+	unlock, err := r.lock(ctx, in.RepoURL)
+	if err != nil {
+		return ResolveOut{}, err
+	}
+	defer unlock()
 	dir, err := r.sync(ctx, in.RepoURL)
 	if err != nil {
 		return ResolveOut{}, err
@@ -206,19 +215,19 @@ func (r *Runner) Resolve(ctx context.Context, in ResolveIn) (ResolveOut, error) 
 	return out, nil
 }
 
-// gatesFor lists the gates that apply to sha under baseID's manifest. The
-// policy merging sha would leave must load too, or the merge would strand
-// the base with a policy it cannot read.
+// gatesFor lists the gates that apply to sha under baseID's manifest. sha
+// must contain baseID and its own policy must load (manifest.CheckHead).
 func gatesFor(dir, base, baseID, sha string) ([]manifest.Gate, error) {
 	m, err := manifest.LoadRev(dir, baseID)
 	if err != nil {
 		return nil, fmt.Errorf("manifest on %s: %w", base, err)
 	}
-	if err := manifest.CheckMerge(dir, baseID, sha); err != nil {
-		if ge := (*manifest.GitError)(nil); errors.As(err, &ge) {
-			return nil, err
-		}
-		return nil, temporal.NewNonRetryableApplicationError(fmt.Sprintf("merging %.12s into %s: %v", sha, base, err), "Malformed", nil)
+	if err := manifest.CheckHead(dir, baseID, sha); errors.Is(err, manifest.ErrBehind) {
+		return nil, temporal.NewNonRetryableApplicationError(fmt.Sprintf("%.12s does not contain %s; rebase onto %s and request again", sha, base, base), "Malformed", nil)
+	} else if ge := (*manifest.GitError)(nil); errors.As(err, &ge) {
+		return nil, err
+	} else if err != nil {
+		return nil, temporal.NewNonRetryableApplicationError(fmt.Sprintf("%.12s: %v", sha, err), "Malformed", nil)
 	}
 	changed, err := manifest.Changed(dir, baseID, sha)
 	if err != nil {
@@ -230,7 +239,11 @@ func gatesFor(dir, base, baseID, sha string) ([]manifest.Gate, error) {
 // Attest judges the check commits for gates on tip.
 func (r *Runner) Attest(ctx context.Context, in AttestIn) (map[string]string, error) {
 	defer heartbeat(ctx)()
-	defer r.lock(in.RepoURL)()
+	unlock, err := r.lock(ctx, in.RepoURL)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	dir, err := r.sync(ctx, in.RepoURL)
 	if err != nil {
 		return nil, err
@@ -248,7 +261,11 @@ func (r *Runner) Rerun(ctx context.Context, in RerunIn) (Verdict, error) {
 	// The lock is held through the command: re-runs of one repository share
 	// its clone, so they take turns, each on a clean checkout of the base.
 	// ponytail: serial per repository; a worktree per job if runs queue up.
-	defer r.lock(in.RepoURL)()
+	unlock, err := r.lock(ctx, in.RepoURL)
+	if err != nil {
+		return Verdict{}, err
+	}
+	defer unlock()
 	dir, err := r.sync(ctx, in.RepoURL)
 	if err != nil {
 		return Verdict{}, err
@@ -261,6 +278,17 @@ func (r *Runner) Rerun(ctx context.Context, in RerunIn) (Verdict, error) {
 		return Verdict{}, err
 	} else if st[in.Gate] != chain.Valid {
 		return Verdict{Reason: "check commit " + st[in.Gate]}, nil
+	}
+	// Activities run at least once: a retry after the pass was recorded but
+	// its completion lost gets that pass, not a second, costly review.
+	key, err := passKey(dir, in.RepoURL, in.Gate, in.BaseID, in.Tip)
+	if err != nil {
+		return Verdict{}, err
+	}
+	if done, err := r.hasPass(key); err != nil {
+		return Verdict{}, err
+	} else if done {
+		return Verdict{Pass: true}, nil
 	}
 	if _, err := gitOut(ctx, dir, "checkout", "-q", "--force", "--detach", in.BaseID); err != nil {
 		return Verdict{}, err
@@ -287,10 +315,6 @@ func (r *Runner) Rerun(ctx context.Context, in RerunIn) (Verdict, error) {
 	}
 	switch res.ExitCode {
 	case 0:
-		key, err := passKey(dir, in.RepoURL, in.Gate, in.BaseID, in.Tip)
-		if err != nil {
-			return Verdict{}, err
-		}
 		if err := r.recordPass(key); err != nil {
 			return Verdict{}, err
 		}
@@ -309,7 +333,11 @@ func (r *Runner) Rerun(ctx context.Context, in RerunIn) (Verdict, error) {
 func (r *Runner) PostCheck(ctx context.Context, in CheckIn) error {
 	if in.Conclusion == "success" {
 		defer heartbeat(ctx)()
-		defer r.lock(in.RepoURL)()
+		unlock, err := r.lock(ctx, in.RepoURL)
+		if err != nil {
+			return err
+		}
+		defer unlock()
 		dir, err := r.sync(ctx, in.RepoURL)
 		if err != nil {
 			return err
@@ -345,7 +373,11 @@ func (r *Runner) PostCheck(ctx context.Context, in CheckIn) error {
 // open are two calls, and the merge (build 5) is pinned to the SHA.
 func (r *Runner) OpenPR(ctx context.Context, in OpenPRIn) (string, error) {
 	defer heartbeat(ctx)()
-	defer r.lock(in.RepoURL)()
+	unlock, err := r.lock(ctx, in.RepoURL)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
 	dir, err := r.sync(ctx, in.RepoURL)
 	if err != nil {
 		return "", err
