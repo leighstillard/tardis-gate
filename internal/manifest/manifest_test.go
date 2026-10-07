@@ -462,6 +462,15 @@ func TestPolicyLintCanTrust(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantErr(t, root, "docs/RUNBOOK.md is not a regular file")
+	// Nor one standing where a directory should be.
+	root = copySample(t, map[string]string{"docs/RUNBOOK.md": ""})
+	if err := os.RemoveAll(filepath.Join(root, "docs")); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(root, "docs"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantErr(t, root, "docs is not a directory")
 }
 
 func TestCheckHeadRefusesAShallowClone(t *testing.T) {

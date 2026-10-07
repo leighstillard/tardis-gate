@@ -123,7 +123,10 @@ func Load(root string) (*Manifest, error) {
 				if _, err := r.Lstat(filepath.FromSlash(q + "/.git")); err == nil {
 					return nil, fmt.Errorf("%s is a submodule; not supported", q)
 				}
-			} else if q == p && !fi.Mode().IsRegular() {
+			} else if q != p {
+				// Opening it as a directory next would block on a FIFO.
+				return nil, fmt.Errorf("%s is not a directory", q)
+			} else if !fi.Mode().IsRegular() {
 				// A FIFO would block the open; git can't commit one anyway.
 				return nil, fmt.Errorf("%s is not a regular file", q)
 			}
