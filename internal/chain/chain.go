@@ -119,8 +119,8 @@ func Verify(dir, base, head string, gates []string) (map[string]string, error) {
 	return out, nil
 }
 
-// judge checks an empty, single-parent check commit's body (%b) against the
-// schema.
+// judge checks an empty, single-parent check commit's message, after the
+// subject line, against the schema.
 func judge(body, gate, lastCode string) string {
 	summary, block := splitTrailers(body)
 	t, reason := parseTrailers(block)
@@ -136,23 +136,25 @@ func judge(body, gate, lastCode string) string {
 	case t[TrailerOf] != lastCode:
 		return broken("of-mismatch")
 	}
-	if strings.TrimSpace(summary) != "" && len(strings.Split(summary, "\n")) > MaxBodyLines {
+	if summary != "" && len(strings.Split(summary, "\n")) > MaxBodyLines {
 		return broken("body-too-long")
 	}
 	return Valid
 }
 
-// splitTrailers splits a raw body into the summary and its final paragraph,
-// which must be the trailer block. Git's own trailer reader is not used: it
-// stops at a "---" line, which a Markdown summary may contain, and it follows
-// the user's trailer config.
+// splitTrailers splits the message after the subject line into the summary
+// and its final paragraph, which must be the trailer block. Only the one blank
+// line after the subject is dropped; every other line of the summary, blank or
+// not, counts toward the limit. Git's own trailer reader is not used: it stops
+// at a "---" line, which a Markdown summary may contain, and it follows the
+// user's trailer config.
 func splitTrailers(body string) (summary, block string) {
 	body = strings.TrimRight(body, "\n")
 	i := strings.LastIndex(body, "\n\n")
 	if i < 0 {
-		return "", body
+		return "", strings.TrimLeft(body, "\n")
 	}
-	return strings.TrimRight(body[:i], "\n"), body[i+2:]
+	return strings.TrimPrefix(body[:i], "\n"), body[i+2:]
 }
 
 // parseTrailers requires the trailer block to be exactly the three
@@ -215,9 +217,10 @@ func isEmpty(dir string, c commit, trees map[string]string) (bool, error) {
 // parents) comes from output that holds only object IDs, one commit per line.
 // Subjects come from a second, NUL-separated listing that must match the first
 // commit for commit; git refuses NUL in messages, so a mismatch means a forged
-// object and fails closed.
+// object and fails closed. Every log here turns off signature and notes output,
+// which user config can switch on.
 func history(dir string, args ...string) ([]commit, error) {
-	out, err := gitRaw(dir, append([]string{"log", "--format=%H %T %P"}, args...)...)
+	out, err := gitRaw(dir, append([]string{"log", "--no-show-signature", "--no-notes", "--format=%H %T %P"}, args...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -238,7 +241,7 @@ func history(dir string, args ...string) ([]commit, error) {
 		commits = append(commits, commit{sha: f[0], tree: f[1], parents: f[2:]})
 	}
 
-	out, err = gitRaw(dir, append([]string{"log", "-z", "--format=%H %s"}, args...)...)
+	out, err = gitRaw(dir, append([]string{"log", "--no-show-signature", "--no-notes", "-z", "--format=%H %s"}, args...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -259,9 +262,17 @@ func history(dir string, args ...string) ([]commit, error) {
 	return commits, nil
 }
 
-// message returns one commit's raw body (%b).
+// message returns one commit's message after its first line, byte for byte
+// from the commit object. `git log --format=%b` would drop leading blank and
+// space-only lines, which then escape the line limit.
 func message(dir, sha string) (string, error) {
-	return gitRaw(dir, "log", "-1", "--format=%b", sha)
+	obj, err := gitRaw(dir, "cat-file", "commit", sha)
+	if err != nil {
+		return "", err
+	}
+	_, msg, _ := strings.Cut(obj, "\n\n") // headers end at the first blank line
+	_, rest, _ := strings.Cut(msg, "\n")
+	return rest, nil
 }
 
 // isOID reports whether s is a full SHA-1 or SHA-256 object ID in hex.

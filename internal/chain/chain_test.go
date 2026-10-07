@@ -210,6 +210,12 @@ func TestForgedSchema(t *testing.T) {
 		"folded trailer": {func(of string) string {
 			return "ship-check: simplify\n\nok\n\nShip-Check: simplify\nShip-Check-Of: " + of + "\nShip-Check-Tool: anthropic/a/\n b\n"
 		}, "folded-trailer"},
+		"space-only lines hide length": {func(of string) string {
+			return "ship-check: simplify\n\n" + strings.Repeat(" \n", MaxBodyLines+1) + "\n" + trailers("simplify", of, "anthropic/a/b") + "\n"
+		}, "body-too-long"},
+		"blank lines before the trailers hide length": {func(of string) string {
+			return "ship-check: simplify\n\nok" + strings.Repeat("\n", MaxBodyLines+2) + trailers("simplify", of, "anthropic/a/b") + "\n"
+		}, "body-too-long"},
 		"trailer-shaped summary hides length": {func(of string) string {
 			return "ship-check: simplify\n\n" + strings.Repeat("Note: x\n", MaxBodyLines+5) + trailers("simplify", of, "anthropic/a/b") + "\n"
 		}, "unexpected-trailers"},
@@ -289,6 +295,27 @@ func TestMergeBaseIsACheckCommit(t *testing.T) {
 
 	r.check("verify", old, "claims the check commit")
 	want(t, r.verify("verify"), "verify", broken("of-mismatch"))
+}
+
+func TestShowSignatureConfigDoesNotBreakParsing(t *testing.T) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("ssh-keygen not installed")
+	}
+	r := newRepo(t)
+	r.branch()
+	key := filepath.Join(t.TempDir(), "k")
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key).CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen: %v\n%s", err, out)
+	}
+	r.git("config", "gpg.format", "ssh")
+	r.git("config", "user.signingkey", key)
+	r.git("config", "log.showSignature", "true")
+	r.git("commit", "-q", "-S", "--allow-empty", "-m", "signed code")
+	r.code("A")
+	if _, err := Commit(r.dir, "simplify", "ok", "anthropic/a/b"); err != nil {
+		t.Fatal(err)
+	}
+	want(t, r.verify("simplify"), "simplify", Valid)
 }
 
 func TestSHA256Repo(t *testing.T) {
