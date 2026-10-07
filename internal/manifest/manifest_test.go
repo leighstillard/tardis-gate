@@ -443,6 +443,16 @@ func TestPolicyChangesGetEveryGate(t *testing.T) {
 			t.Errorf("change to %s: %d gates, want all 2", p, got)
 		}
 	}
+	// A custom dir that looks like the embedded-gate source is still policy.
+	root = copySample(t, map[string]string{
+		".tardis/config.yml":          "gates:\n  - name: security\n    dir: reference:security\n    applies_when: [\"src/**\"]\n",
+		"reference:security/gate.yml": "name: security\nrun: [make]\ntimeout: 1m\n",
+	})
+	if sec, err := Load(root); err != nil {
+		t.Fatal(err)
+	} else if got := len(sec.Resolve([]string{"reference:security/gate.yml"})); got != 1 {
+		t.Errorf("change to a custom gate in reference:security: %d gates, want 1", got)
+	}
 	if got := len(m.Resolve([]string{"internal/x.go", "tools/lintx"})); got != 0 {
 		t.Errorf("change outside the policy and web/: %d gates, want 0", got)
 	}

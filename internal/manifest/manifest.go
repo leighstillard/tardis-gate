@@ -466,7 +466,7 @@ func (m *Manifest) Resolve(changed []string) []Gate {
 func (m *Manifest) touchesPolicy(changed []string) bool {
 	dirs := []string{".tardis"}
 	for _, g := range m.Gates {
-		if !strings.HasPrefix(g.Source, "reference:") {
+		if g.Source != "reference:"+g.Name { // exactly: a custom dir may be named reference:x
 			dirs = append(dirs, path.Dir(g.Source))
 		}
 	}
