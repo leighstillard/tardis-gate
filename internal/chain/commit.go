@@ -56,7 +56,13 @@ func Commit(dir, gate, summary, tool string) (string, error) {
 	if _, err := git(dir, "diff", "--cached", "--quiet"); err != nil {
 		return "", errors.New("staged changes present; commit or unstage them first")
 	}
-	before, err := git(dir, "rev-parse", "--verify", "HEAD^{commit}")
+	// Publish to the branch HEAD names now, so a checkout while the check is
+	// written cannot move it onto another branch. Detached: HEAD itself.
+	ref, err := git(dir, "symbolic-ref", "-q", "HEAD")
+	if err != nil {
+		ref = "HEAD"
+	}
+	before, err := git(dir, "rev-parse", "--verify", ref+"^{commit}")
 	if err != nil {
 		return "", err
 	}
@@ -77,8 +83,8 @@ func Commit(dir, gate, summary, tool string) (string, error) {
 	} else if s != Valid {
 		return "", fmt.Errorf("the check commit would be %s; rewrite the summary and retry", s)
 	}
-	if _, err := git(dir, "update-ref", "-m", "tardis: check commit "+gate, "HEAD", sha, before); err != nil {
-		return "", fmt.Errorf("HEAD moved while the check commit was written; nothing changed: %v", err)
+	if _, err := git(dir, "update-ref", "--no-deref", "-m", "tardis: check commit "+gate, ref, sha, before); err != nil {
+		return "", fmt.Errorf("%s moved while the check commit was written; nothing changed: %v", ref, err)
 	}
 	return sha, nil
 }
@@ -101,11 +107,11 @@ func asVerified(dir, sha, parent, gate, of string) (string, error) {
 	} else if !empty {
 		return broken("not-empty"), nil
 	}
-	body, block, err := message(dir, sha)
+	body, err := message(dir, sha)
 	if err != nil {
 		return "", err
 	}
-	return judge(body, block, gate, of), nil
+	return judge(body, gate, of), nil
 }
 
 // maxCheckRun bounds the walk back over stacked check commits.

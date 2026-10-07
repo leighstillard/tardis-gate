@@ -38,8 +38,8 @@ can order and judge valid / missing / broken with one command and no network.
 - Does not read `gate.yml`; the gate list is an argument (-manifest resolves it).
 
 ## Decisions
-- Write with `git commit --allow-empty --trailer`, read with `git interpret-trailers
-  --parse` — both work on git 2.53 (spike)
+- Write with `git commit-tree` (no hooks), read the body's last paragraph as the trailer
+  block — git's reader stops at `---` and follows user config (Codex review)
 - Emptiness = `git rev-parse <c>^{tree} <c>^^{tree}` equal — `diff-tree` needs `--root`
   and would be a second code path (spike)
 - `Ship-Check` = gate name — machine-stable; subject stays human (expert-general, 0.7)

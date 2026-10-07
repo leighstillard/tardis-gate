@@ -86,11 +86,11 @@ func Verify(dir, base, head string, gates []string) (map[string]string, error) {
 			} else if !empty {
 				state[gate] = broken("not-empty")
 			} else {
-				body, trailers, err := message(dir, c.sha)
+				body, err := message(dir, c.sha)
 				if err != nil {
 					return nil, err
 				}
-				state[gate] = judge(body, trailers, gate, last)
+				state[gate] = judge(body, gate, last)
 				continue
 			}
 		}
@@ -119,10 +119,11 @@ func Verify(dir, base, head string, gates []string) (map[string]string, error) {
 	return out, nil
 }
 
-// judge checks an empty, single-parent check commit's message against the
-// schema. body is %b and trailers is git's raw %(trailers) block.
-func judge(body, trailers, gate, lastCode string) string {
-	t, reason := parseTrailers(trailers)
+// judge checks an empty, single-parent check commit's body (%b) against the
+// schema.
+func judge(body, gate, lastCode string) string {
+	summary, block := splitTrailers(body)
+	t, reason := parseTrailers(block)
 	switch {
 	case reason != "":
 		return broken(reason)
@@ -135,21 +136,29 @@ func judge(body, trailers, gate, lastCode string) string {
 	case t[TrailerOf] != lastCode:
 		return broken("of-mismatch")
 	}
-	n, ok := summaryLines(body, trailers)
-	switch {
-	case !ok:
-		return broken("unexpected-trailers")
-	case n > MaxBodyLines:
+	if strings.TrimSpace(summary) != "" && len(strings.Split(summary, "\n")) > MaxBodyLines {
 		return broken("body-too-long")
 	}
 	return Valid
 }
 
-// parseTrailers requires the raw trailer block to be exactly the three
+// splitTrailers splits a raw body into the summary and its final paragraph,
+// which must be the trailer block. Git's own trailer reader is not used: it
+// stops at a "---" line, which a Markdown summary may contain, and it follows
+// the user's trailer config.
+func splitTrailers(body string) (summary, block string) {
+	body = strings.TrimRight(body, "\n")
+	i := strings.LastIndex(body, "\n\n")
+	if i < 0 {
+		return "", body
+	}
+	return strings.TrimRight(body[:i], "\n"), body[i+2:]
+}
+
+// parseTrailers requires the trailer block to be exactly the three
 // Ship-Check trailers, once each, unfolded, and nothing else.
 func parseTrailers(block string) (map[string]string, string) {
-	block = strings.TrimRight(block, "\n")
-	if block == "" {
+	if !strings.Contains("\n"+block, "\n"+TrailerCheck) {
 		return nil, "missing-trailers"
 	}
 	t := map[string]string{}
@@ -173,21 +182,6 @@ func parseTrailers(block string) (map[string]string, string) {
 		return nil, "missing-trailers"
 	}
 	return t, ""
-}
-
-// summaryLines counts the raw body lines before the trailer block. It reports
-// false if the body does not end with that block.
-func summaryLines(body, block string) (int, bool) {
-	body = strings.TrimRight(body, "\n")
-	block = strings.TrimRight(block, "\n")
-	if !strings.HasSuffix(body, block) {
-		return 0, false
-	}
-	summary := strings.TrimRight(strings.TrimSuffix(body, block), "\n")
-	if strings.TrimSpace(summary) == "" {
-		return 0, true
-	}
-	return len(strings.Split(summary, "\n")), true
 }
 
 // AllValid reports whether every status is Valid.
@@ -265,17 +259,9 @@ func history(dir string, args ...string) ([]commit, error) {
 	return commits, nil
 }
 
-// message returns one commit's body (%b) and raw trailer block (%(trailers)),
-// each from its own git call so neither can be confused with the other.
-func message(dir, sha string) (body, trailers string, err error) {
-	if body, err = gitRaw(dir, "log", "-1", "--format=%b", sha); err != nil {
-		return "", "", err
-	}
-	// Pin the separator so a user's trailer.separators cannot hide our trailers.
-	if trailers, err = gitRaw(dir, "-c", "trailer.separators=:", "log", "-1", "--format=%(trailers)", sha); err != nil {
-		return "", "", err
-	}
-	return body, trailers, nil
+// message returns one commit's raw body (%b).
+func message(dir, sha string) (string, error) {
+	return gitRaw(dir, "log", "-1", "--format=%b", sha)
 }
 
 // isOID reports whether s is a full SHA-1 or SHA-256 object ID in hex.

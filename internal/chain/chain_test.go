@@ -368,6 +368,33 @@ func TestCommitUndoesACheckThatWouldNotVerify(t *testing.T) {
 	}
 }
 
+func TestCommitAcceptsMarkdownDivider(t *testing.T) {
+	r := newRepo(t)
+	r.branch()
+	r.code("A")
+	if _, err := Commit(r.dir, "simplify", "## Findings\n\n---\n\nnone", "anthropic/a/b"); err != nil {
+		t.Fatal(err)
+	}
+	want(t, r.verify("simplify"), "simplify", Valid)
+}
+
+func TestCommitOnDetachedHead(t *testing.T) {
+	r := newRepo(t)
+	r.branch()
+	a := r.code("A")
+	r.git("checkout", "-q", "--detach")
+	sha, err := Commit(r.dir, "simplify", "ok", "anthropic/a/b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.git("rev-parse", "HEAD"); got != sha {
+		t.Errorf("HEAD = %s, want the check %s", got, sha)
+	}
+	if got := r.git("rev-parse", "feature"); got != a {
+		t.Errorf("feature moved to %s; a detached check must leave branches alone", got)
+	}
+}
+
 func TestCommitWritesTrailers(t *testing.T) {
 	r := newRepo(t)
 	r.branch()
