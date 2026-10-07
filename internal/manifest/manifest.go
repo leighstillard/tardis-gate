@@ -66,6 +66,10 @@ type Manifest struct {
 	Gates         []Gate
 }
 
+// branchName is the subset of git's branch names a base may have; the rest
+// of git's rules are checked alongside it.
+var branchName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._/-]*$`)
+
 // Limits on repository-controlled input.
 const (
 	maxFile = 64 << 10 // config or gate.yml
@@ -290,6 +294,10 @@ func load(read readFunc) (*Manifest, error) {
 		m.BaseBranch = "main"
 	}
 	var errs []error
+	if !branchName.MatchString(m.BaseBranch) || strings.Contains(m.BaseBranch, "..") || strings.Contains(m.BaseBranch, "//") ||
+		strings.HasSuffix(m.BaseBranch, ".lock") || strings.HasSuffix(m.BaseBranch, "/") || strings.HasSuffix(m.BaseBranch, ".") {
+		errs = append(errs, fmt.Errorf("base_branch %q is not a branch name git accepts", m.BaseBranch))
+	}
 	seen := map[string]bool{}
 	verifyEnabled := false
 	for _, ref := range cfg.Gates {

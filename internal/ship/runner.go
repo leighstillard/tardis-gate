@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 
 	"go.temporal.io/sdk/temporal"
 
@@ -455,6 +457,12 @@ func gitOut(ctx context.Context, dir string, args ...string) (string, error) {
 	args = append([]string{"--no-replace-objects"}, args...)
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Env = chain.GitEnv() // a hook's GIT_DIR must not override -C
+	// Cancelling kills git's helpers (ssh, credential helpers) too, and a
+	// helper that keeps the pipe open cannot hold the activity, or the
+	// repository lock, past a few seconds.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 5 * time.Second
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {

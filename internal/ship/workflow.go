@@ -194,7 +194,9 @@ func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
 		}
 		// Both at once: a dead runner must not hold up the author's news, nor
 		// an absent author the failure check.
-		n := workflow.ExecuteActivity(deliveryOpts(ctx, authorQ), ActNotify, Event{Kind: kind, Gate: gate, SHA: tip, Detail: why, Pass: passOf(ctx)})
+		// Kept for as long as the run waits for a fix, so an author who
+		// detached during the pass still hears why it stopped.
+		n := workflow.ExecuteActivity(workflow.WithScheduleToCloseTimeout(deliveryOpts(ctx, authorQ), AwaitFix), ActNotify, Event{Kind: kind, Gate: gate, SHA: tip, Detail: why, Pass: passOf(ctx)})
 		c := postCheck(ctx, in, "", "", tip, gate, "failure", why)
 		_ = n.Get(ctx, nil)
 		_ = c.Get(ctx, nil) // best effort: a failure only blocks

@@ -489,6 +489,17 @@ func TestCheckHeadRefusesAShallowClone(t *testing.T) {
 	}
 }
 
+func TestBaseBranchMustBeABranchName(t *testing.T) {
+	for _, b := range []string{"foo bar", "a..b", "-x", "x.lock", "x/", "x//y", "refs~1"} {
+		root := copySample(t, map[string]string{".tardis/config.yml": "base_branch: '" + b + "'\ngates:\n  - name: simplify\n"})
+		wantErr(t, root, "is not a branch name git accepts")
+	}
+	root := copySample(t, map[string]string{".tardis/config.yml": "base_branch: release/2.x\ngates:\n  - name: simplify\n"})
+	if _, err := Load(root); err != nil {
+		t.Errorf("base_branch release/2.x: %v", err)
+	}
+}
+
 func TestAppliesWhenIsCapped(t *testing.T) {
 	globs := strings.Repeat(`"a/**",`, maxGlobs+1)
 	root := copySample(t, map[string]string{".tardis/config.yml": "gates:\n  - name: simplify\n    applies_when: [" + strings.TrimSuffix(globs, ",") + "]\n"})

@@ -273,6 +273,18 @@ func TestRunnerRecoversFromAnInterruptedClone(t *testing.T) {
 	}
 }
 
+func TestGitOutStopsWithItsContext(t *testing.T) {
+	// A helper git starts (ssh, a credential helper) that keeps the pipe
+	// open must not hold a cancelled call, or the repository lock.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err := gitOut(ctx, "", "-c", "alias.hang=!sh -c 'sleep 60 & sleep 60'", "hang")
+	if err == nil || time.Since(start) > 8*time.Second {
+		t.Errorf("gitOut returned %v after %v; want an error within a few seconds", err, time.Since(start))
+	}
+}
+
 func TestRunnerRefusesABaseItDidNotChoose(t *testing.T) {
 	r, url, base, check := runnerFixture(t)
 	ctx := context.Background()
