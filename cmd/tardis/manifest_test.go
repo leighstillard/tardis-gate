@@ -115,6 +115,29 @@ func TestResolveRefusesAHeadThatBreaksThePolicy(t *testing.T) {
 	}
 }
 
+func TestChainVerifyRefusesAForgedResolution(t *testing.T) {
+	dir, git := gitRepo(t)
+	git("checkout", "-q", "main")
+	cfg := filepath.Join(dir, ".tardis", "config.yml")
+	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, []byte("gates:\n  - name: simplify\n  - name: review\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "-A")
+	git("commit", "-q", "-m", "enrol")
+	git("checkout", "-q", "feature")
+	git("rebase", "-q", "main")
+	base, head := git("rev-parse", "main"), git("rev-parse", "HEAD")
+	for _, gates := range []string{`[]`, `["simplify"]`, `["review","simplify"]`, `["simplify","other"]`} {
+		forged := fmt.Sprintf(`{"base":%q,"head":%q,"gates":%s}`, base, head, gates)
+		if code, _, stderr := runCLI("chain", "verify", "main", "HEAD", "--gates", forged, "--repo", dir); code != 2 || !strings.Contains(stderr, "resolves") {
+			t.Errorf("gates %s: exit %d err %q, want 2 and a mismatch message", gates, code, stderr)
+		}
+	}
+}
+
 func TestUnmovedCatchesAMovedHead(t *testing.T) {
 	dir, git := gitRepo(t)
 	pinned := [2]string{git("rev-parse", "main"), git("rev-parse", "HEAD")}
@@ -149,6 +172,19 @@ func TestParseResolvedFailsClosed(t *testing.T) {
 
 func TestChainVerifyEmptyResolution(t *testing.T) {
 	dir, git := gitRepo(t)
+	// The only gate is scoped to web/, which the branch does not touch.
+	git("checkout", "-q", "main")
+	cfg := filepath.Join(dir, ".tardis", "config.yml")
+	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, []byte("gates:\n  - name: simplify\n    applies_when: [\"web/**\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "-A")
+	git("commit", "-q", "-m", "enrol")
+	git("checkout", "-q", "feature")
+	git("rebase", "-q", "main")
 	none := fmt.Sprintf(`{"base":%q,"head":%q,"gates":[]}`, git("rev-parse", "main"), git("rev-parse", "HEAD"))
 	if code, out, stderr := runCLI("chain", "verify", "main", "HEAD", "--gates", none, "--repo", dir); code != 0 || strings.TrimSpace(out) != "{}" {
 		t.Errorf("no gate applies: exit %d out %q err %q, want 0 and {}", code, out, stderr)

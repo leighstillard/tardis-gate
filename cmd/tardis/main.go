@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"runtime/debug"
+	"slices"
 	"strings"
 
 	"github.com/leighstillard/tardis-gate/internal/chain"
@@ -139,6 +140,15 @@ func chainVerify(args []string, stdout, stderr io.Writer) int {
 		pinned, list, bound = [2]string{r.Base, r.Head}, r.Gates, true
 		if err := unmoved(*repo, pos, pinned); err != nil {
 			fmt.Fprintf(stderr, "chain verify: --gates was resolved for other commits (%v); resolve again\n", err)
+			return 2
+		}
+		// Anyone can write this JSON; it counts only if base's manifest
+		// resolves the same gates, in the same order, for these commits.
+		if _, names, code, err := resolveGates(*repo, r.Base, r.Head); err != nil {
+			fmt.Fprintln(stderr, "chain verify:", err)
+			return code
+		} else if !slices.Equal(names, r.Gates) {
+			fmt.Fprintf(stderr, "chain verify: --gates lists %v, but %.12s's manifest resolves %v; resolve again\n", r.Gates, r.Base, names)
 			return 2
 		}
 	} else if strings.HasPrefix(v, "[") {

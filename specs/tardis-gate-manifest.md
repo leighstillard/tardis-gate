@@ -18,8 +18,12 @@ with a `gate.yml`, and one command resolves the ordered gate list a given diff m
   reads it (`base_branch` -workflow, rest -runner / -pr); lint rejects it until then.
 - `tardis manifest lint` → schema/order errors; `tardis manifest resolve <base> <head>`
   → JSON `{base, head, gates}`: the ordered gates, bound to the commits they were
-  resolved on; -evidence `--gates` takes it as is and refuses it once either has moved.
+  resolved on; -evidence `--gates` takes it as is, refusing it once either has moved or
+  if base's manifest no longer resolves the same list.
   `chain verify --manifest` resolves and verifies on the same commit IDs in one call.
+  Policy comes from base; head's manifest must still load, so merging it can't strand
+  base. Globs: `*`, `?`, `**`; a trailing `/**` also matches the directory itself (a
+  changed submodule).
 - Touches: `gates/`, `internal/manifest`, `cmd/tardis`. Does not touch: Temporal, GitHub
 
 ## Acceptance checks
@@ -39,7 +43,8 @@ with a `gate.yml`, and one command resolves the ordered gate list a given diff m
 - No remote gate sources in v1 (no registry, no URLs, no submodule resolution).
 - `manifest` never executes a gate's `run`; it only resolves and validates.
 - No per-gate ordering keys; order is list order in the config.
-- Enrolment is not gated: the operator commits the config to base, as with rulesets.
+- Enrolment and unenrolment are not gated: the operator commits or removes the config on
+  base, as with rulesets.
 
 ## Decisions
 - Default order simplify, verify, design, review; config list order wins
