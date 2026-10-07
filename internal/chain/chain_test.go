@@ -216,6 +216,9 @@ func TestForgedSchema(t *testing.T) {
 		"blank lines before the trailers hide length": {func(of string) string {
 			return "ship-check: simplify\n\nok" + strings.Repeat("\n", MaxBodyLines+2) + trailers("simplify", of, "anthropic/a/b") + "\n"
 		}, "body-too-long"},
+		"empty summary": {func(of string) string {
+			return "ship-check: simplify\n\n" + trailers("simplify", of, "anthropic/a/b") + "\n"
+		}, "empty-summary"},
 		"trailer-shaped summary hides length": {func(of string) string {
 			return "ship-check: simplify\n\n" + strings.Repeat("Note: x\n", MaxBodyLines+5) + trailers("simplify", of, "anthropic/a/b") + "\n"
 		}, "unexpected-trailers"},
@@ -383,6 +386,20 @@ func TestShallowCloneIsRefused(t *testing.T) {
 	if _, err := Commit(shallow, "simplify", "ok", "anthropic/a/b"); err == nil || !strings.Contains(err.Error(), "shallow") {
 		t.Errorf("Commit in a shallow clone: err = %v", err)
 	}
+}
+
+func TestGraftsAreIgnored(t *testing.T) {
+	// A legacy graft cutting code commit B off its parents would rewrite the
+	// history verification reads; it must read the real one.
+	r := newRepo(t)
+	r.branch()
+	a := r.code("A")
+	r.check("simplify", a, "ok")
+	b := r.code("B")
+	if err := os.WriteFile(filepath.Join(r.dir, ".git", "info", "grafts"), []byte(b+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want(t, r.verify("simplify"), "simplify", broken("superseded"))
 }
 
 func TestCommitEncodingDoesNotBreakUnicodeGates(t *testing.T) {

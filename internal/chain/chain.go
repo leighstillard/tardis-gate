@@ -142,8 +142,11 @@ func judge(subject, body, gate, lastCode string) string {
 	case t[TrailerOf] != lastCode:
 		return broken("of-mismatch")
 	}
-	if summary != "" && len(strings.Split(summary, "\n")) > MaxBodyLines {
+	switch {
+	case len(strings.Split(summary, "\n")) > MaxBodyLines:
 		return broken("body-too-long")
+	case strings.TrimSpace(summary) == "": // as Commit refuses to write one
+		return broken("empty-summary")
 	}
 	return Valid
 }
@@ -317,9 +320,10 @@ var localEnv = map[string]bool{
 
 // GitEnv is this process's environment without git's repository-location
 // variables, so a git run with -C reads the repository it names even when
-// tardis is started from a hook in another one.
+// tardis is started from a hook in another one. Legacy grafts
+// (.git/info/grafts), which rewrite parents as replace refs do, are off.
 func GitEnv() []string {
-	var env []string
+	env := []string{"GIT_GRAFT_FILE=" + os.DevNull}
 	for _, kv := range os.Environ() {
 		if k, _, _ := strings.Cut(kv, "="); !localEnv[k] {
 			env = append(env, kv)
