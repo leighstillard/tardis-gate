@@ -114,11 +114,14 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 				return "", err
 			}
 			notify(ctx, authorQ, Event{Kind: "pr-created", SHA: res.Tip, Detail: url})
+			notify(ctx, authorQ, Event{Kind: "completed", SHA: res.Tip})
+			// Last look, with nothing blocking before the return: Temporal does
+			// not let a run complete past a signal that arrived meanwhile, so a
+			// head requested at any point up to here starts the run again.
 			if newer := latest(heads, ""); newer != "" {
 				head = newer
 				continue
 			}
-			notify(ctx, authorQ, Event{Kind: "completed", SHA: res.Tip})
 			return url, nil
 		}
 
@@ -143,7 +146,7 @@ func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
 			return outcome{Canceled: true}
 		}
 		notify(ctx, authorQ, Event{Kind: kind, Gate: gate, SHA: tip, Detail: why})
-		postCheck(ctx, in, "", tip, gate, "failure", why)
+		_ = postCheck(ctx, in, "", tip, gate, "failure", why) // best effort: a failure only blocks
 		return outcome{Gate: gate, Kind: kind, Reason: why, Tip: tip}
 	}
 
@@ -195,7 +198,10 @@ func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
 	// Every gate's success goes on the final tip, the commit the PR is opened
 	// for: GitHub shows, and OpenPR reads, the checks on the head only.
 	for _, n := range names {
-		postCheck(ctx, in, res.BaseID, tip, n, "success", "")
+		// No PR without its checks: a refused or failed success stops the pass.
+		if err := postCheck(ctx, in, res.BaseID, tip, n, "success", ""); err != nil {
+			return stop(n, "failed", "posting the success check: "+reason(err), tip)
+		}
 	}
 	return outcome{Tip: tip}
 }
@@ -222,8 +228,8 @@ func notify(ctx workflow.Context, authorQ string, e Event) {
 // postCheck records a tardis/<gate> check run; it waits for a runner if none is up.
 // postCheck asks the runner to post a check. The runner posts a success only
 // for a gate it re-ran and passed itself; the workflow cannot vouch for one.
-func postCheck(ctx workflow.Context, in Input, baseID, sha, gate, conclusion, summary string) {
-	_ = workflow.ExecuteActivity(deliveryOpts(ctx, RunnerQueue), ActPostCheck,
+func postCheck(ctx workflow.Context, in Input, baseID, sha, gate, conclusion, summary string) error {
+	return workflow.ExecuteActivity(deliveryOpts(ctx, RunnerQueue), ActPostCheck,
 		CheckIn{RepoURL: in.RepoURL, Base: in.Base, BaseID: baseID, SHA: sha, Gate: gate, Conclusion: conclusion, Summary: summary}).Get(ctx, nil)
 }
 

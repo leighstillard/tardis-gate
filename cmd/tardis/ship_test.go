@@ -1,6 +1,27 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestRepoIDKeepsRepositoriesApart(t *testing.T) {
+	for _, u := range []string{"https://github.com/Owner/Repo.git", "git@github.com:owner/repo.git", "ssh://git@github.com/owner/repo"} {
+		if got := repoID(u); got != "owner/repo" {
+			t.Errorf("repoID(%q) = %q, want owner/repo", u, got)
+		}
+	}
+	a, b := repoID("https://gitlab.com/team-a/widget.git"), repoID("https://gitlab.com/team-b/widget.git")
+	if a == b || repoID("/srv/a/widget") == repoID("/srv/b/widget") {
+		t.Errorf("same-named repositories share an ID: %q %q", a, b)
+	}
+	if !strings.HasPrefix(a, "other/widget-") {
+		t.Errorf("repoID = %q, want other/widget-<hash>", a)
+	}
+	if repoID("https://evilgithub.com/owner/repo") == "owner/repo" {
+		t.Error("a non-GitHub host was read as GitHub")
+	}
+}
 
 func TestCheckRemoteRefusesCredentials(t *testing.T) {
 	for url, ok := range map[string]bool{

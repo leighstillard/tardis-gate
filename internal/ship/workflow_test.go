@@ -24,6 +24,8 @@ type fake struct {
 	checkOn []string // "<name> <conclusion>@<sha>"
 	openPRs int
 	onOpen  func()                            // called inside OpenPR, before it returns
+	onEvent func(e Event)                     // called inside Notify
+	postErr func(in CheckIn) error            // PostCheck's result; nil: ok
 	rerun   func(in RerunIn) (Verdict, error) // nil: pass
 }
 
@@ -63,6 +65,11 @@ func (f *fake) register(env *testsuite.TestWorkflowEnvironment) {
 		return Verdict{Pass: true}, nil
 	})
 	reg(ActPostCheck, func(_ context.Context, in CheckIn) error {
+		if f.postErr != nil {
+			if err := f.postErr(in); err != nil {
+				return err
+			}
+		}
 		f.mu.Lock()
 		f.checks = append(f.checks, "tardis/"+in.Gate+" "+in.Conclusion)
 		f.checkOn = append(f.checkOn, "tardis/"+in.Gate+" "+in.Conclusion+"@"+in.SHA)
@@ -82,7 +89,11 @@ func (f *fake) register(env *testsuite.TestWorkflowEnvironment) {
 	reg(ActNotify, func(_ context.Context, e Event) error {
 		f.mu.Lock()
 		f.events = append(f.events, e.String())
+		on := f.onEvent
 		f.mu.Unlock()
+		if on != nil {
+			on(e)
+		}
 		return nil
 	})
 }
@@ -127,6 +138,46 @@ func TestAllGatesPassOpensOnePR(t *testing.T) {
 	tip := "c1+simplify+verify+review"
 	if got, want := strings.Join(f.checkOn, ","), "tardis/simplify success@"+tip+",tardis/verify success@"+tip+",tardis/review success@"+tip; got != want {
 		t.Errorf("checks\n got %s\nwant %s", got, want)
+	}
+}
+
+func TestNewHeadAsTheRunCompletesIsNotLost(t *testing.T) {
+	f := &fake{gates: []string{"simplify"}}
+	env := newEnv(t, f)
+	f.onEvent = func(e Event) {
+		if e.Kind == "completed" && e.SHA == "c1+simplify" {
+			env.SignalWorkflow(SignalNewHead, NewHead{SHA: "c2"})
+		}
+	}
+	env.ExecuteWorkflow(Ship, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if last := f.events[len(f.events)-1]; last != "completed c2+simplify" {
+		t.Errorf("last event %q; all %v", last, f.events)
+	}
+}
+
+func TestRefusedSuccessCheckStopsBeforeOpenPR(t *testing.T) {
+	f := &fake{gates: []string{"simplify"}}
+	f.postErr = func(in CheckIn) error {
+		if in.Conclusion == "success" {
+			return temporal.NewNonRetryableApplicationError("refusing tardis/simplify success", "Rejected", nil)
+		}
+		return nil
+	}
+	env := newEnv(t, f)
+	env.RegisterDelayedCallback(func() { env.CancelWorkflow() }, time.Hour) // it waits for a fix
+	env.ExecuteWorkflow(Ship, in)
+	if f.openPRs != 0 {
+		t.Errorf("OpenPR called %d times after the success check was refused", f.openPRs)
+	}
+	found := false
+	for _, e := range f.events {
+		found = found || strings.HasPrefix(e, "simplify failed: posting the success check")
+	}
+	if !found {
+		t.Errorf("events %v; want a failed event for the refused check", f.events)
 	}
 }
 

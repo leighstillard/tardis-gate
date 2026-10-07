@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -84,13 +86,18 @@ func checkRemote(raw string) error {
 	return nil
 }
 
-// repoID turns a remote URL into owner/repo, or local/<name> for a path.
-func repoID(url string) string {
-	u := strings.TrimSuffix(strings.TrimSuffix(url, "/"), ".git")
-	if i := strings.Index(u, "github.com"); i >= 0 {
-		return strings.TrimLeft(strings.ReplaceAll(u[i+len("github.com"):], ":", "/"), "/")
+// repoID names a repository for its workflow IDs: owner/repo on GitHub, and
+// otherwise the name plus a hash of the whole remote URL, so two repositories
+// with the same name elsewhere never share a run.
+func repoID(remoteURL string) string {
+	u := strings.TrimSuffix(strings.TrimSuffix(remoteURL, "/"), ".git")
+	for _, p := range []string{"https://github.com/", "ssh://git@github.com/", "git@github.com:"} {
+		if rest, ok := strings.CutPrefix(u, p); ok && strings.Count(rest, "/") == 1 {
+			return strings.ToLower(rest)
+		}
 	}
-	return "local/" + path.Base(filepath.ToSlash(u))
+	sum := sha256.Sum256([]byte(remoteURL))
+	return "other/" + path.Base(filepath.ToSlash(u)) + "-" + hex.EncodeToString(sum[:4])
 }
 
 func request(args []string, stdout, stderr io.Writer) int {
@@ -232,15 +239,26 @@ func attach(c client.Client, wfID, repo, remote, branch, tool string, stdout, st
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
-	select {
-	case e := <-events:
-		if e.Kind == "completed" {
+	var closed chan error // set once "completed" is seen
+	for {
+		select {
+		case e := <-events:
+			if e.Kind != "completed" {
+				return 1
+			}
+			// A head requested as the run finished starts it again, so stay
+			// attached, serving its reviews, until the run has really closed.
+			closed = make(chan error, 1)
+			go func() { closed <- c.GetWorkflow(context.Background(), wfID, "").Get(context.Background(), nil) }()
+		case err := <-closed:
+			if err != nil {
+				return 1
+			}
 			return 0
+		case <-sigs:
+			fmt.Fprintln(stderr, "detached; the run continues. Re-attach with: tardis wait")
+			return 130
 		}
-		return 1
-	case <-sigs:
-		fmt.Fprintln(stderr, "detached; the run continues. Re-attach with: tardis wait")
-		return 130
 	}
 }
 
@@ -248,7 +266,8 @@ func runner(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("runner", flag.ContinueOnError)
 	home, _ := os.UserCacheDir()
 	workDir := fs.String("work-dir", filepath.Join(home, "tardis", "runner"), "where repository clones live")
-	rerun := fs.String("rerun-cmd", "", "shell command run per gate; exit 0 passes, 1 rejects (stand-in until provider re-runs)")
+	rerun := fs.String("rerun-cmd", "", "shell command run per gate; exit 0 passes, 1 rejects (stand-in until provider re-runs). "+
+		"It runs in a clean checkout of the base, never the branch's code: read the change with git through $TARDIS_SHA and $TARDIS_BASE")
 	if _, code, ok := parse(fs, "runner [--work-dir <dir>] [--rerun-cmd <sh>]", args, 0, stderr); !ok {
 		return code
 	}
