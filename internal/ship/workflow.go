@@ -100,6 +100,12 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 		}
 
 		if res.Gate == "" {
+			// A head requested after the pass finished is not lost: start
+			// again on it, whether it came before or during OpenPR.
+			if newer := latest(heads, ""); newer != "" {
+				head = newer
+				continue
+			}
 			var url string
 			err := workflow.ExecuteActivity(runnerOpts(ctx, 5*time.Minute), ActOpenPR,
 				OpenPRIn{RepoURL: in.RepoURL, Branch: in.Branch, Base: in.Base, Head: res.Tip}).Get(ctx, &url)
@@ -108,6 +114,10 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 				return "", err
 			}
 			notify(ctx, authorQ, Event{Kind: "pr-created", SHA: res.Tip, Detail: url})
+			if newer := latest(heads, ""); newer != "" {
+				head = newer
+				continue
+			}
 			notify(ctx, authorQ, Event{Kind: "completed", SHA: res.Tip})
 			return url, nil
 		}
@@ -167,7 +177,6 @@ func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
 		if !v.Pass {
 			return stop(g.Name, "rejected", v.Reason, tip)
 		}
-		postCheck(ctx, in, tip, g.Name, "success", "")
 		notify(ctx, authorQ, Event{Kind: "passed", Gate: g.Name, SHA: tip})
 	}
 
@@ -181,6 +190,11 @@ func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
 		if st[n] != "valid" {
 			return stop(n, "rejected", "check commit "+st[n]+" on the final tip", tip)
 		}
+	}
+	// Every gate's success goes on the final tip, the commit the PR is opened
+	// for: GitHub shows, and OpenPR reads, the checks on the head only.
+	for _, n := range names {
+		postCheck(ctx, in, tip, n, "success", "")
 	}
 	return outcome{Tip: tip}
 }

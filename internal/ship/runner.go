@@ -28,36 +28,54 @@ type Runner struct {
 	Exec     executor.Executor
 	Log      io.Writer
 
-	mu sync.Mutex // ponytail: one lock for all clones; per-repo locks if runs queue up
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex // one per repository URL, guarding its clone
+}
+
+// lock serialises work on one repository's clone, so a slow fetch of one
+// repository never holds up another.
+func (r *Runner) lock(repoURL string) (unlock func()) {
+	r.mu.Lock()
+	if r.locks == nil {
+		r.locks = map[string]*sync.Mutex{}
+	}
+	l := r.locks[repoURL]
+	if l == nil {
+		l = &sync.Mutex{}
+		r.locks[repoURL] = l
+	}
+	r.mu.Unlock()
+	l.Lock()
+	return l.Unlock
 }
 
 // sync fetches the repository and leaves the base branch checked out, so
 // nothing in the working tree comes from the branch under review.
-func (r *Runner) sync(repoURL, base string) (string, error) {
+func (r *Runner) sync(ctx context.Context, repoURL, base string) (string, error) {
 	sum := sha256.Sum256([]byte(repoURL))
 	dir := filepath.Join(r.WorkDir, hex.EncodeToString(sum[:8]))
 	if _, err := os.Stat(filepath.Join(dir, ".git")); errors.Is(err, os.ErrNotExist) {
 		if err := os.MkdirAll(r.WorkDir, 0o700); err != nil {
 			return "", err
 		}
-		if _, err := gitOut("", "clone", "-q", "--no-checkout", repoURL, dir); err != nil {
+		if _, err := gitOut(ctx, "", "clone", "-q", "--no-checkout", repoURL, dir); err != nil {
 			return "", err
 		}
 	}
-	if _, err := gitOut(dir, "fetch", "-q", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
+	if _, err := gitOut(ctx, dir, "fetch", "-q", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
 		return "", err
 	}
-	if _, err := gitOut(dir, "checkout", "-q", "--force", "--detach", "origin/"+base); err != nil {
+	if _, err := gitOut(ctx, dir, "checkout", "-q", "--force", "--detach", "origin/"+base); err != nil {
 		return "", err
 	}
 	return dir, nil
 }
 
 // Resolve lists the gates that apply to sha, from the base branch's manifest.
-func (r *Runner) Resolve(_ context.Context, in ResolveIn) ([]GateInfo, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	dir, err := r.sync(in.RepoURL, in.Base)
+func (r *Runner) Resolve(ctx context.Context, in ResolveIn) ([]GateInfo, error) {
+	defer heartbeat(ctx)()
+	defer r.lock(in.RepoURL)()
+	dir, err := r.sync(ctx, in.RepoURL, in.Base)
 	if err != nil {
 		return nil, err
 	}
@@ -77,10 +95,10 @@ func (r *Runner) Resolve(_ context.Context, in ResolveIn) ([]GateInfo, error) {
 }
 
 // Attest judges the check commits for gates on tip.
-func (r *Runner) Attest(_ context.Context, in AttestIn) (map[string]string, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	dir, err := r.sync(in.RepoURL, in.Base)
+func (r *Runner) Attest(ctx context.Context, in AttestIn) (map[string]string, error) {
+	defer heartbeat(ctx)()
+	defer r.lock(in.RepoURL)()
+	dir, err := r.sync(ctx, in.RepoURL, in.Base)
 	if err != nil {
 		return nil, err
 	}
@@ -93,13 +111,13 @@ func (r *Runner) Rerun(ctx context.Context, in RerunIn) (Verdict, error) {
 	if len(r.RerunCmd) == 0 {
 		return Verdict{Reason: "this runner has no re-run configured"}, nil
 	}
-	r.mu.Lock()
-	dir, err := r.sync(in.RepoURL, in.Base)
-	r.mu.Unlock()
+	defer heartbeat(ctx)()
+	unlock := r.lock(in.RepoURL)
+	dir, err := r.sync(ctx, in.RepoURL, in.Base)
+	unlock()
 	if err != nil {
 		return Verdict{}, err
 	}
-	defer heartbeat(ctx)()
 	res, err := r.Exec.Run(ctx, executor.Job{
 		Argv: r.RerunCmd,
 		Dir:  dir,
@@ -129,11 +147,12 @@ func (r *Runner) OpenPR(_ context.Context, in OpenPRIn) (string, error) {
 	return "local:" + in.Branch + "@" + in.Head[:min(12, len(in.Head))], nil
 }
 
-func gitOut(dir string, args ...string) (string, error) {
+// gitOut runs git, killed if ctx ends (an activity's deadline or cancellation).
+func gitOut(ctx context.Context, dir string, args ...string) (string, error) {
 	if dir != "" {
 		args = append([]string{"-C", dir}, args...)
 	}
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {

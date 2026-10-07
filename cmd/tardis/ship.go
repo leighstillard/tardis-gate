@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -59,12 +60,28 @@ func branchRun(repo, remote string) (ship.Input, string, error) {
 	if err != nil {
 		return ship.Input{}, "", err
 	}
+	if err := checkRemote(url); err != nil {
+		return ship.Input{}, "", err
+	}
 	m, err := manifest.Load(repo)
 	if err != nil {
 		return ship.Input{}, "", err
 	}
 	in := ship.Input{RepoURL: url, RepoID: repoID(url), Branch: branch, Base: m.BaseBranch}
 	return in, ship.WorkflowID(in.RepoID, branch), nil
+}
+
+// checkRemote refuses a remote URL that carries credentials: the URL is
+// stored in the run's Temporal history, which every worker can read.
+func checkRemote(raw string) error {
+	u, err := neturl.Parse(raw)
+	if err != nil || u.User == nil {
+		return nil // scp-like (git@host:owner/repo) or a local path
+	}
+	if _, hasPassword := u.User.Password(); hasPassword || u.Scheme == "http" || u.Scheme == "https" {
+		return errors.New("the remote URL carries credentials, which would be stored in Temporal history; use a git credential helper instead")
+	}
+	return nil
 }
 
 // repoID turns a remote URL into owner/repo, or local/<name> for a path.

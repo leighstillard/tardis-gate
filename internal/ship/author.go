@@ -33,32 +33,43 @@ type Author struct {
 // as is; otherwise the gate's run command is executed and its findings become
 // the check commit's summary. It returns the new branch tip.
 func (a *Author) AuthorReview(ctx context.Context, in AuthorReviewIn) (string, error) {
-	tip, err := gitOut(a.Dir, "rev-parse", "HEAD")
+	tip, err := gitOut(ctx, a.Dir, "rev-parse", "HEAD")
 	if err != nil {
 		return "", err
 	}
 	if tip != in.Tip {
-		return "", temporal.NewNonRetryableApplicationError(
-			fmt.Sprintf("branch moved: HEAD is %s, the run expects %s; run tardis request again", tip, in.Tip),
-			"Malformed", nil)
+		// A retry after this activity already wrote its check (and perhaps
+		// lost the push or its completion) finds that check on top of the
+		// expected tip: resume from it. Anything else is the branch moving.
+		parent, _ := gitOut(ctx, a.Dir, "rev-parse", "HEAD^")
+		subject, _ := gitOut(ctx, a.Dir, "log", "-1", "--format=%s", "HEAD")
+		if parent != in.Tip || subject != chain.SubjectPrefix+in.Gate {
+			return "", temporal.NewNonRetryableApplicationError(
+				fmt.Sprintf("branch moved: HEAD is %s, the run expects %s; run tardis request again", tip, in.Tip),
+				"Malformed", nil)
+		}
 	}
-	st, err := chain.Verify(a.Dir, in.Base, "HEAD", []string{in.Gate})
+	// The base as last fetched from the remote, as the runner reads it.
+	base := a.Remote + "/" + in.Base
+	st, err := chain.Verify(a.Dir, base, "HEAD", []string{in.Gate})
 	if err != nil {
 		return "", err
 	}
 	if st[in.Gate] != chain.Valid {
-		if err := a.review(ctx, in); err != nil {
+		if err := a.review(ctx, in, base); err != nil {
 			return "", err
 		}
 	}
-	if _, err := gitOut(a.Dir, "push", "-q", a.Remote, "HEAD:refs/heads/"+a.Branch); err != nil {
+	if _, err := gitOut(ctx, a.Dir, "push", "-q", a.Remote, "HEAD:refs/heads/"+a.Branch); err != nil {
 		return "", err
 	}
-	return gitOut(a.Dir, "rev-parse", "HEAD")
+	return gitOut(ctx, a.Dir, "rev-parse", "HEAD")
 }
 
-func (a *Author) review(ctx context.Context, in AuthorReviewIn) error {
-	m, err := manifest.Load(a.Dir)
+func (a *Author) review(ctx context.Context, in AuthorReviewIn, base string) error {
+	// The gate's command comes from base, like the gate list, so the branch
+	// under review cannot change what runs here.
+	m, err := manifest.LoadRev(a.Dir, base)
 	if err != nil {
 		return temporal.NewNonRetryableApplicationError(err.Error(), "Malformed", nil)
 	}
@@ -69,7 +80,7 @@ func (a *Author) review(ctx context.Context, in AuthorReviewIn) error {
 		}
 	}
 	if gate == nil {
-		return temporal.NewNonRetryableApplicationError("gate "+in.Gate+" is not enabled in this checkout", "Malformed", nil)
+		return temporal.NewNonRetryableApplicationError("gate "+in.Gate+" is not enabled on "+base, "Malformed", nil)
 	}
 
 	tmp, err := os.MkdirTemp("", "tardis-review-")
@@ -77,7 +88,7 @@ func (a *Author) review(ctx context.Context, in AuthorReviewIn) error {
 		return err
 	}
 	defer os.RemoveAll(tmp)
-	diff, err := gitOut(a.Dir, "diff", in.Base+"..."+in.Code)
+	diff, err := gitOut(ctx, a.Dir, "diff", base+"..."+in.Code)
 	if err != nil {
 		return err
 	}
@@ -91,7 +102,7 @@ func (a *Author) review(ctx context.Context, in AuthorReviewIn) error {
 		Argv: gate.Run,
 		Dir:  a.Dir,
 		Env: []string{
-			"TARDIS_GATE=" + in.Gate, "TARDIS_BASE=" + in.Base, "TARDIS_HEAD=" + in.Code,
+			"TARDIS_GATE=" + in.Gate, "TARDIS_BASE=" + base, "TARDIS_HEAD=" + in.Code,
 			"TARDIS_DIFF_FILE=" + diffFile, "TARDIS_RUNBOOK=" + m.VerifyRunbook,
 			"TARDIS_FINDINGS_OUT=" + findings,
 		},
@@ -108,7 +119,7 @@ func (a *Author) review(ctx context.Context, in AuthorReviewIn) error {
 		return temporal.NewNonRetryableApplicationError("the gate wrote no findings to $TARDIS_FINDINGS_OUT", "Malformed", nil)
 	}
 	// The review covered in.Tip; never let it vouch for code committed meanwhile.
-	if now, err := gitOut(a.Dir, "rev-parse", "HEAD"); err != nil {
+	if now, err := gitOut(ctx, a.Dir, "rev-parse", "HEAD"); err != nil {
 		return err
 	} else if now != in.Tip {
 		return temporal.NewNonRetryableApplicationError(

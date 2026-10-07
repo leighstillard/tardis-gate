@@ -21,7 +21,9 @@ type fake struct {
 	calls   []string // "author:<gate>@<code>", "rerun:<gate>@<tip>", ...
 	events  []string
 	checks  []string
+	checkOn []string // "<name> <conclusion>@<sha>"
 	openPRs int
+	onOpen  func()                            // called inside OpenPR, before it returns
 	rerun   func(in RerunIn) (Verdict, error) // nil: pass
 }
 
@@ -57,13 +59,18 @@ func (f *fake) register(env *testsuite.TestWorkflowEnvironment) {
 	reg(ActPostCheck, func(_ context.Context, in CheckIn) error {
 		f.mu.Lock()
 		f.checks = append(f.checks, in.Name+" "+in.Conclusion)
+		f.checkOn = append(f.checkOn, in.Name+" "+in.Conclusion+"@"+in.SHA)
 		f.mu.Unlock()
 		return nil
 	})
 	reg(ActOpenPR, func(_ context.Context, in OpenPRIn) (string, error) {
 		f.mu.Lock()
 		f.openPRs++
+		open := f.onOpen
 		f.mu.Unlock()
+		if open != nil {
+			open()
+		}
 		return "pr://" + in.Branch, nil
 	})
 	reg(ActNotify, func(_ context.Context, e Event) error {
@@ -110,8 +117,30 @@ func TestAllGatesPassOpensOnePR(t *testing.T) {
 	if !contains(f.events, "pr-created pr://feature") {
 		t.Errorf("no pr-created event: %v", f.events)
 	}
-	if got := strings.Join(f.checks, ","); got != "tardis/simplify success,tardis/verify success,tardis/review success" {
-		t.Errorf("checks %s", got)
+	// Every gate's success is on the final tip, the PR's head.
+	tip := "c1+simplify+verify+review"
+	if got, want := strings.Join(f.checkOn, ","), "tardis/simplify success@"+tip+",tardis/verify success@"+tip+",tardis/review success@"+tip; got != want {
+		t.Errorf("checks\n got %s\nwant %s", got, want)
+	}
+}
+
+func TestNewHeadDuringOpenPRIsNotLost(t *testing.T) {
+	f := &fake{gates: []string{"simplify"}}
+	env := newEnv(t, f)
+	f.onOpen = func() {
+		f.onOpen = nil
+		env.SignalWorkflow(SignalNewHead, NewHead{SHA: "c2"})
+	}
+	env.ExecuteWorkflow(Ship, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"author:simplify@c1", "rerun:simplify@c1+simplify", "author:simplify@c2", "rerun:simplify@c2+simplify"}
+	if !reflect.DeepEqual(f.calls, want) {
+		t.Errorf("calls\n got %v\nwant %v", f.calls, want)
+	}
+	if last := f.events[len(f.events)-1]; last != "completed c2+simplify" {
+		t.Errorf("last event %q; all %v", last, f.events)
 	}
 }
 
