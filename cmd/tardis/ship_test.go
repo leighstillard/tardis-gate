@@ -1,9 +1,29 @@
 package main
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 )
+
+func TestGitLineReadsStdoutOnly(t *testing.T) {
+	// A branch and a tag both named x: git answers on stdout and warns that
+	// x is ambiguous on stderr. The warning is not part of the answer.
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "a"},
+		{"tag", "x"}, {"branch", "x"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	head, _ := gitLine(dir, "rev-parse", "HEAD")
+	if got, err := gitLine(dir, "rev-parse", "x"); err != nil || got != head {
+		t.Errorf("gitLine(rev-parse x) = %q, %v; want %q", got, err, head)
+	}
+}
 
 func TestRepoIDKeepsRepositoriesApart(t *testing.T) {
 	for _, u := range []string{"https://github.com/Owner/Repo.git", "git@github.com:owner/repo.git", "ssh://git@github.com/owner/repo"} {

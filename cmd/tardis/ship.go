@@ -327,9 +327,11 @@ func countPositional(args []string) int {
 func gitLine(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"--no-replace-objects", "-C", dir}, args...)...)
 	cmd.Env = chain.GitEnv() // a hook's GIT_DIR must not override -C
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("git %s: %s", args[0], strings.TrimSpace(string(out)))
+	out, err := cmd.Output() // stdout only: a warning on stderr is not part of the answer
+	if ee := (*exec.ExitError)(nil); errors.As(err, &ee) {
+		return "", fmt.Errorf("git %s: %s", args[0], strings.TrimSpace(string(ee.Stderr)))
+	} else if err != nil {
+		return "", fmt.Errorf("git %s: %w", args[0], err)
 	}
 	return strings.TrimSpace(string(out)), nil
 }
