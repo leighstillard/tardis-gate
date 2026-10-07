@@ -22,7 +22,7 @@ with a `gate.yml`, and one command resolves the ordered gate list a given diff m
   if base's manifest no longer resolves the same list.
   `chain verify --manifest` resolves and verifies on the same commit IDs in one call.
   Policy comes from base; head's manifest must still load, so merging it can't strand
-  base. Globs: `*`, `?`, `**`; a trailing `/**` also matches the directory itself (a
+  base. A diff touching `.tardis/`, a gate's dir or the runbook gets every gate. Globs: `*`, `?`, `**`; a trailing `/**` also matches the directory itself (a
   changed submodule).
 - Touches: `gates/`, `internal/manifest`, `cmd/tardis`. Does not touch: Temporal, GitHub
 

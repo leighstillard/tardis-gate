@@ -45,14 +45,14 @@ func TestManifestLintAndResolveFeedChainVerify(t *testing.T) {
 	}
 
 	// A branch that rewrites the config, committed or not, cannot drop gates:
-	// resolve reads the policy from base.
+	// resolve reads the policy from base, and a policy change gets every gate.
 	cfg := filepath.Join(dir, ".tardis", "config.yml")
 	if err := os.WriteFile(cfg, []byte("gates:\n  - name: simplify\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	git("commit", "-q", "-am", "drop verify")
-	if code, out, stderr := runCLI("manifest", "resolve", "main", "HEAD", "--repo", dir); code != 0 || !strings.Contains(out, `"gates":["simplify","verify"]`) {
-		t.Errorf("resolve after the branch edits the config: exit %d out %q err %q, want simplify and verify", code, out, stderr)
+	if code, out, stderr := runCLI("manifest", "resolve", "main", "HEAD", "--repo", dir); code != 0 || !strings.Contains(out, `"gates":["simplify","verify","design"]`) {
+		t.Errorf("resolve after the branch edits the config: exit %d out %q err %q, want every gate", code, out, stderr)
 	}
 
 	// The list resolved before that commit is bound to the old head: refused.
@@ -107,6 +107,9 @@ func TestResolveRefusesAHeadThatBreaksThePolicy(t *testing.T) {
 	git("commit", "-q", "-am", "break the policy")
 	if code, _, stderr := runCLI("manifest", "resolve", "main", "HEAD", "--repo", dir); code != 1 || !strings.Contains(stderr, "HEAD: ") {
 		t.Errorf("head with a broken manifest: exit %d err %q, want 1 naming HEAD", code, stderr)
+	}
+	if code, _, stderr := runCLI("chain", "verify", "main", "HEAD", "--manifest", "--repo", dir); code != 1 {
+		t.Errorf("chain verify --manifest, head with a broken manifest: exit %d err %q, want 1", code, stderr)
 	}
 	git("rm", "-q", ".tardis/config.yml")
 	git("commit", "-q", "-m", "unenrol")

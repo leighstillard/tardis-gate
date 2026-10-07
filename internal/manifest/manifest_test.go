@@ -419,7 +419,28 @@ func TestGateCountIsCapped(t *testing.T) {
 	}
 	edits[".tardis/config.yml"] = cfg
 	root := copySample(t, edits)
-	wantErr(t, root, fmt.Sprintf("gates: %d enabled; at most %d", maxGates+1, maxGates))
+	wantErr(t, root, fmt.Sprintf("gates: %d listed; at most %d", maxGates+1, maxGates))
+}
+
+func TestPolicyChangesGetEveryGate(t *testing.T) {
+	// Every gate is scoped away from the policy files; changing them must
+	// still be reviewed by all of them.
+	root := copySample(t, map[string]string{
+		".tardis/config.yml":  "verify_runbook: docs/RUNBOOK.md\ngates:\n  - name: simplify\n    applies_when: [\"web/**\"]\n  - name: lint\n    dir: tools/lint\n",
+		"tools/lint/gate.yml": "name: lint\napplies_when: [\"web/**\"]\nrun: [make]\ntimeout: 1m\n",
+	})
+	m, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{".tardis/config.yml", ".tardis/gates/new/gate.yml", "tools/lint/run.sh", "docs/RUNBOOK.md"} {
+		if got := len(m.Resolve([]string{p})); got != 2 {
+			t.Errorf("change to %s: %d gates, want all 2", p, got)
+		}
+	}
+	if got := len(m.Resolve([]string{"internal/x.go", "tools/lintx"})); got != 0 {
+		t.Errorf("change outside the policy and web/: %d gates, want 0", got)
+	}
 }
 
 func TestExactNameRefusesAnotherSpelling(t *testing.T) {

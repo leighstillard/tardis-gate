@@ -123,10 +123,10 @@ func chainVerify(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "chain verify: use --gates or --manifest, not both")
 			return 2
 		}
-		ids, names, _, err := resolveGates(*repo, pos[0], pos[1])
+		ids, names, code, err := resolveGates(*repo, pos[0], pos[1])
 		if err != nil {
 			fmt.Fprintln(stderr, "chain verify:", err)
-			return 2
+			return code
 		}
 		pinned, list, bound = ids, names, true
 	} else if v := strings.TrimSpace(*gates); strings.HasPrefix(v, "{") {

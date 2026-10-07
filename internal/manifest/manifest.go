@@ -237,6 +237,10 @@ func load(read readFunc) (*Manifest, error) {
 		}
 	}
 
+	// Before loading any: each gate can cost git calls.
+	if len(cfg.Gates) > maxGates {
+		return nil, fmt.Errorf("gates: %d listed; at most %d", len(cfg.Gates), maxGates)
+	}
 	m := &Manifest{}
 	var errs []error
 	seen := map[string]bool{}
@@ -264,9 +268,6 @@ func load(read readFunc) (*Manifest, error) {
 	}
 	if len(m.Gates) == 0 && len(errs) == 0 {
 		errs = append(errs, errors.New("gates: no gate is enabled"))
-	}
-	if len(m.Gates) > maxGates {
-		errs = append(errs, fmt.Errorf("gates: %d enabled; at most %d", len(m.Gates), maxGates))
 	}
 
 	if cfg.VerifyRunbook != "" {
@@ -406,6 +407,9 @@ func (g Gate) Applies(changed []string) bool {
 
 // Resolve returns the gates that apply to a diff touching changed, in order.
 func (m *Manifest) Resolve(changed []string) []Gate {
+	if m.touchesPolicy(changed) {
+		return slices.Clone(m.Gates)
+	}
 	var out []Gate
 	for _, g := range m.Gates {
 		if g.Applies(changed) {
@@ -413,6 +417,30 @@ func (m *Manifest) Resolve(changed []string) []Gate {
 		}
 	}
 	return out
+}
+
+// touchesPolicy reports whether a diff changes the policy itself: anything
+// under .tardis, a gate's own directory, or the runbook. Such a diff gets
+// every gate, whatever its applies_when, so no scope lets a branch rewrite
+// the rules unreviewed.
+func (m *Manifest) touchesPolicy(changed []string) bool {
+	dirs := []string{".tardis"}
+	for _, g := range m.Gates {
+		if !strings.HasPrefix(g.Source, "reference:") {
+			dirs = append(dirs, path.Dir(g.Source))
+		}
+	}
+	for _, p := range changed {
+		if p == m.VerifyRunbook {
+			return true
+		}
+		for _, d := range dirs {
+			if p == d || strings.HasPrefix(p, d+"/") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Changed lists the paths a branch changes relative to its merge base with
