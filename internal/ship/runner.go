@@ -31,8 +31,8 @@ type Runner struct {
 	mu sync.Mutex // ponytail: one lock for all clones; per-repo locks if runs queue up
 }
 
-// sync fetches the repository and leaves the base branch checked out, so the
-// gate list comes from reviewed code rather than the branch under review.
+// sync fetches the repository and leaves the base branch checked out, so
+// nothing in the working tree comes from the branch under review.
 func (r *Runner) sync(repoURL, base string) (string, error) {
 	sum := sha256.Sum256([]byte(repoURL))
 	dir := filepath.Join(r.WorkDir, hex.EncodeToString(sum[:8]))
@@ -61,7 +61,7 @@ func (r *Runner) Resolve(_ context.Context, in ResolveIn) ([]GateInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	m, err := manifest.Load(dir)
+	m, err := manifest.LoadRev(dir, "origin/"+in.Base)
 	if err != nil {
 		return nil, fmt.Errorf("manifest on %s: %w", in.Base, err)
 	}
