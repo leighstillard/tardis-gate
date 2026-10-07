@@ -26,28 +26,39 @@ const (
 
 func broken(reason string) string { return "broken(" + reason + ")" }
 
-// commit is one entry of `git log` over base..head.
+// commit is one entry of `git log`.
 type commit struct {
-	sha, tree, parent string // parent is the first parent, "" for a root commit
-	subject           string
-	bodyLines         int // summary lines, trailers excluded
-	gate, of, tool    string
+	sha, tree string
+	parents   []string
+	subject   string
+	body      string // %b: everything after the subject, trailer block included
+	trailers  string // %(trailers): git's raw trailer block, non-trailer lines included
 }
 
-// isCheck reports whether c is shaped like a check commit. Anything else is code.
-func (c commit) isCheck() bool {
-	return strings.HasPrefix(c.subject, SubjectPrefix) && c.gate != "" && c.of != "" && c.tool != ""
+// checkGate returns the gate named by a check-commit subject.
+func (c commit) checkGate() (string, bool) {
+	return strings.CutPrefix(c.subject, SubjectPrefix)
 }
 
-// Verify walks base..head oldest first and returns a status per requested gate.
-// A later check for the same gate replaces an earlier one; any commit that
-// changes the tree supersedes every valid check before it.
+// Verify walks merge-base(base, head)..head oldest first and returns a status
+// per requested gate. A commit whose subject starts "ship-check: " is a check
+// attempt; it counts as a check only if it has one parent and changes nothing,
+// and anything else is code. A later check for a gate replaces an earlier one,
+// and a code commit supersedes every valid check before it.
 func Verify(dir, base, head string, gates []string) (map[string]string, error) {
-	baseSHA, err := git(dir, "rev-parse", "--verify", "--quiet", base+"^{commit}")
-	if err != nil {
+	if _, err := git(dir, "rev-parse", "--verify", "--quiet", base+"^{commit}"); err != nil {
 		return nil, fmt.Errorf("base %q is not a commit in %s", base, dir)
 	}
-	commits, err := log(dir, "--reverse", "--topo-order", base+".."+head)
+	if _, err := git(dir, "rev-parse", "--verify", "--quiet", head+"^{commit}"); err != nil {
+		return nil, fmt.Errorf("head %q is not a commit in %s", head, dir)
+	}
+	// Starting from the merge base keeps a check from claiming a base commit
+	// that head's history doesn't contain.
+	mb, err := git(dir, "merge-base", base, head)
+	if err != nil {
+		return nil, fmt.Errorf("base %q and head %q share no history", base, head)
+	}
+	commits, err := log(dir, "--reverse", "--topo-order", mb+".."+head)
 	if err != nil {
 		return nil, err
 	}
@@ -57,28 +68,21 @@ func Verify(dir, base, head string, gates []string) (map[string]string, error) {
 	}
 
 	state := map[string]string{}
-	lastCode := baseSHA
+	lastCode := mb
 	for _, c := range commits {
-		empty, err := isEmpty(dir, c, trees)
-		if err != nil {
-			return nil, err
-		}
-		if c.isCheck() {
-			switch {
-			case !empty:
-				state[c.gate] = broken("not-empty")
-			case c.of != lastCode:
-				state[c.gate] = broken("of-mismatch")
-			case c.bodyLines > MaxBodyLines:
-				state[c.gate] = broken("body-too-long")
-			default:
-				state[c.gate] = Valid
-			}
-			if empty {
+		if gate, ok := c.checkGate(); ok {
+			if len(c.parents) != 1 {
+				state[gate] = broken("not-single-parent")
+			} else if empty, err := isEmpty(dir, c, trees); err != nil {
+				return nil, err
+			} else if !empty {
+				state[gate] = broken("not-empty")
+			} else {
+				state[gate] = judge(c, gate, lastCode)
 				continue
 			}
 		}
-		// A code commit, or a check commit that smuggled in a tree change.
+		// A code commit, or a check attempt that is a merge or changes the tree.
 		for g, s := range state {
 			if s == Valid {
 				state[g] = broken("superseded")
@@ -98,6 +102,76 @@ func Verify(dir, base, head string, gates []string) (map[string]string, error) {
 	return out, nil
 }
 
+// judge checks an empty, single-parent check commit against the schema.
+func judge(c commit, gate, lastCode string) string {
+	t, reason := parseTrailers(c.trailers)
+	switch {
+	case reason != "":
+		return broken(reason)
+	case checkGateName(gate) != nil:
+		return broken("bad-gate")
+	case t[TrailerCheck] != gate:
+		return broken("subject-mismatch")
+	case CheckTool(t[TrailerTool]) != nil:
+		return broken("bad-tool")
+	case t[TrailerOf] != lastCode:
+		return broken("of-mismatch")
+	}
+	n, ok := summaryLines(c.body, c.trailers)
+	switch {
+	case !ok:
+		return broken("unexpected-trailers")
+	case n > MaxBodyLines:
+		return broken("body-too-long")
+	}
+	return Valid
+}
+
+// parseTrailers requires the raw trailer block to be exactly the three
+// Ship-Check trailers, once each, unfolded, and nothing else.
+func parseTrailers(block string) (map[string]string, string) {
+	block = strings.TrimRight(block, "\n")
+	if block == "" {
+		return nil, "missing-trailers"
+	}
+	t := map[string]string{}
+	for _, line := range strings.Split(block, "\n") {
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			return nil, "folded-trailer"
+		}
+		key, val, ok := strings.Cut(line, ": ")
+		if !ok || (key != TrailerCheck && key != TrailerOf && key != TrailerTool) {
+			return nil, "unexpected-trailers"
+		}
+		if _, dup := t[key]; dup {
+			return nil, "duplicate-trailer"
+		}
+		if val = strings.TrimSpace(val); val == "" {
+			return nil, "missing-trailers"
+		}
+		t[key] = val
+	}
+	if len(t) != 3 {
+		return nil, "missing-trailers"
+	}
+	return t, ""
+}
+
+// summaryLines counts the raw body lines before the trailer block. It reports
+// false if the body does not end with that block.
+func summaryLines(body, block string) (int, bool) {
+	body = strings.TrimRight(body, "\n")
+	block = strings.TrimRight(block, "\n")
+	if !strings.HasSuffix(body, block) {
+		return 0, false
+	}
+	summary := strings.TrimRight(strings.TrimSuffix(body, block), "\n")
+	if strings.TrimSpace(summary) == "" {
+		return 0, true
+	}
+	return len(strings.Split(summary, "\n")), true
+}
+
 // AllValid reports whether every status is Valid.
 func AllValid(statuses map[string]string) bool {
 	for _, s := range statuses {
@@ -108,17 +182,19 @@ func AllValid(statuses map[string]string) bool {
 	return true
 }
 
+// isEmpty reports whether a single-parent commit leaves its parent's tree as is.
 func isEmpty(dir string, c commit, trees map[string]string) (bool, error) {
-	if c.parent == "" {
-		return false, nil // a root commit adds the whole tree
+	if len(c.parents) != 1 {
+		return false, nil
 	}
-	pt, ok := trees[c.parent]
+	p := c.parents[0]
+	pt, ok := trees[p]
 	if !ok {
 		var err error
-		if pt, err = git(dir, "rev-parse", c.parent+"^{tree}"); err != nil {
+		if pt, err = git(dir, "rev-parse", p+"^{tree}"); err != nil {
 			return false, err
 		}
-		trees[c.parent] = pt
+		trees[p] = pt
 	}
 	return pt == c.tree, nil
 }
@@ -127,16 +203,9 @@ func isEmpty(dir string, c commit, trees map[string]string) (bool, error) {
 const (
 	fs = "\x1f"
 	rs = "\x1e"
-	vs = "\x1d" // separates repeated trailer values
 )
 
-var logFormat = strings.Join([]string{
-	"%H", "%T", "%P", "%s", "%b",
-	"%(trailers:key=" + TrailerCheck + ",valueonly,separator=%x1d)",
-	"%(trailers:key=" + TrailerOf + ",valueonly,separator=%x1d)",
-	"%(trailers:key=" + TrailerTool + ",valueonly,separator=%x1d)",
-	"%(trailers:only,unfold)",
-}, "%x1f") + "%x1e"
+const logFormat = "%H%x1f%T%x1f%P%x1f%s%x1f%b%x1f%(trailers)%x1e"
 
 func log(dir string, args ...string) ([]commit, error) {
 	out, err := git(dir, append([]string{"log", "--format=" + logFormat}, args...)...)
@@ -150,42 +219,15 @@ func log(dir string, args ...string) ([]commit, error) {
 			continue
 		}
 		f := strings.Split(rec, fs)
-		if len(f) != 9 {
+		if len(f) != 6 {
 			return nil, fmt.Errorf("chain: unexpected git log record with %d fields", len(f))
 		}
-		parent, _, _ := strings.Cut(f[2], " ")
 		commits = append(commits, commit{
-			sha: f[0], tree: f[1], parent: parent, subject: f[3],
-			bodyLines: summaryLines(f[4], f[8]),
-			gate:      last(f[5]), of: last(f[6]), tool: last(f[7]),
+			sha: f[0], tree: f[1], parents: strings.Fields(f[2]),
+			subject: f[3], body: f[4], trailers: f[5],
 		})
 	}
 	return commits, nil
-}
-
-// last returns the final value of a possibly repeated trailer, so a repeated
-// trailer behaves like git's own "last one wins" reading.
-func last(v string) string {
-	v = strings.TrimSpace(v)
-	if i := strings.LastIndex(v, vs); i >= 0 {
-		v = v[i+len(vs):]
-	}
-	return strings.TrimSpace(v)
-}
-
-// summaryLines counts body lines that are not part of the trailer block.
-func summaryLines(body, trailers string) int {
-	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
-	if strings.TrimSpace(body) == "" {
-		return 0
-	}
-	if t := strings.TrimRight(trailers, "\n"); t != "" {
-		lines = lines[:max(0, len(lines)-len(strings.Split(t, "\n")))]
-	}
-	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
-		lines = lines[:len(lines)-1]
-	}
-	return len(lines)
 }
 
 func git(dir string, args ...string) (string, error) {

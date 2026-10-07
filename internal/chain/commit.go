@@ -12,7 +12,7 @@ var Vendors = []string{"anthropic", "openai", "google", "local", "other"}
 // CheckTool validates a Ship-Check-Tool value: <vendor>/<tool>/<model>.
 func CheckTool(tool string) error {
 	parts := strings.Split(tool, "/")
-	if len(parts) != 3 || parts[1] == "" || parts[2] == "" {
+	if len(parts) != 3 || parts[1] == "" || parts[2] == "" || strings.ContainsAny(tool, " \t") {
 		return fmt.Errorf("tool %q: want <vendor>/<tool>/<model>", tool)
 	}
 	for _, v := range Vendors {
@@ -23,12 +23,19 @@ func CheckTool(tool string) error {
 	return fmt.Errorf("tool %q: vendor must be one of %s", tool, strings.Join(Vendors, ", "))
 }
 
+func checkGateName(gate string) error {
+	if gate == "" || strings.ContainsAny(gate, " \t\n/:") {
+		return fmt.Errorf("gate %q: must be a non-empty name without spaces, slashes or colons", gate)
+	}
+	return nil
+}
+
 // Commit writes an empty check commit for gate on HEAD of the repo in dir.
 // Ship-Check-Of is the nearest code commit at or before HEAD. It returns the
-// new commit's SHA.
+// new commit's SHA, and undoes the commit if it would not verify as written.
 func Commit(dir, gate, summary, tool string) (string, error) {
-	if gate == "" || strings.ContainsAny(gate, " \t\n/") {
-		return "", fmt.Errorf("gate %q: must be a non-empty name without spaces or slashes", gate)
+	if err := checkGateName(gate); err != nil {
+		return "", err
 	}
 	if err := CheckTool(tool); err != nil {
 		return "", err
@@ -48,16 +55,25 @@ func Commit(dir, gate, summary, tool string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, err := git(dir, "commit", "--allow-empty", "--no-verify", "-q",
-		"-m", SubjectPrefix+gate,
-		"-m", summary,
-		"--trailer", TrailerCheck+": "+gate,
-		"--trailer", TrailerOf+": "+of,
-		"--trailer", TrailerTool+": "+tool,
-	); err != nil {
+	// The trailers get their own paragraph so they never merge with a
+	// trailer-like last line of the summary.
+	trailers := TrailerCheck + ": " + gate + "\n" + TrailerOf + ": " + of + "\n" + TrailerTool + ": " + tool
+	if _, err := git(dir, "commit", "--allow-empty", "--no-verify", "-q", "--cleanup=strip",
+		"-m", SubjectPrefix+gate, "-m", summary, "-m", trailers); err != nil {
 		return "", err
 	}
-	return git(dir, "rev-parse", "HEAD")
+	head, err := log(dir, "-1", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	if s := judge(head[0], gate, of); s != Valid {
+		// Only our own empty commit is undone; the index and work tree stay as they were.
+		if _, rerr := git(dir, "reset", "-q", "--soft", "HEAD^"); rerr != nil {
+			return "", fmt.Errorf("check commit came out %s and could not be undone: %v", s, rerr)
+		}
+		return "", fmt.Errorf("summary makes the check commit %s; rewrite it and retry", s)
+	}
+	return head[0].sha, nil
 }
 
 // maxCheckRun bounds the walk back over stacked check commits.
@@ -65,7 +81,7 @@ func Commit(dir, gate, summary, tool string) (string, error) {
 const maxCheckRun = 500
 
 // lastCode returns the nearest first-parent ancestor of HEAD (HEAD included)
-// that is not an empty check commit.
+// that is not an empty, single-parent check attempt.
 func lastCode(dir string) (string, error) {
 	commits, err := log(dir, "--first-parent", fmt.Sprintf("--max-count=%d", maxCheckRun+1), "HEAD")
 	if err != nil {
@@ -76,11 +92,12 @@ func lastCode(dir string) (string, error) {
 		trees[c.sha] = c.tree
 	}
 	for _, c := range commits { // newest first
+		_, isCheck := c.checkGate()
 		empty, err := isEmpty(dir, c, trees)
 		if err != nil {
 			return "", err
 		}
-		if !c.isCheck() || !empty {
+		if !isCheck || !empty {
 			return c.sha, nil
 		}
 	}

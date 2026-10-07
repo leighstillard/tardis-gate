@@ -169,13 +169,129 @@ func TestLaterCheckSupersedesEarlier(t *testing.T) {
 	want(t, r.verify("simplify"), "simplify", Valid)
 }
 
-func TestCodeCommitWithCheckSubjectButNoTrailersIsCode(t *testing.T) {
+func TestEmptyCheckWithoutTrailersIsBrokenNotCode(t *testing.T) {
 	r := newRepo(t)
 	r.branch()
 	a := r.code("A")
 	r.check("simplify", a, "ok")
 	r.git("commit", "--allow-empty", "-q", "-m", SubjectPrefix+"verify", "-m", "no trailers")
-	want(t, r.verify("simplify"), "simplify", broken("superseded"))
+	got := r.verify("simplify", "verify")
+	want(t, got, "simplify", Valid) // an empty commit changes no code
+	want(t, got, "verify", broken("missing-trailers"))
+}
+
+// raw commits an empty commit with an exact message, for forging.
+func (r *repo) raw(msg string) {
+	r.t.Helper()
+	r.git("commit", "--allow-empty", "-q", "--cleanup=verbatim", "-m", msg)
+}
+
+func trailers(gate, of, tool string) string {
+	return TrailerCheck + ": " + gate + "\n" + TrailerOf + ": " + of + "\n" + TrailerTool + ": " + tool
+}
+
+func TestForgedSchema(t *testing.T) {
+	for name, tc := range map[string]struct {
+		msg  func(of string) string
+		want string
+	}{
+		"subject mismatch": {func(of string) string {
+			return "ship-check: simplify\n\nok\n\n" + trailers("verify", of, "anthropic/a/b") + "\n"
+		}, "subject-mismatch"},
+		"bad tool": {func(of string) string {
+			return "ship-check: simplify\n\nok\n\n" + trailers("simplify", of, "acme/foo/bar") + "\n"
+		}, "bad-tool"},
+		"duplicate trailer": {func(of string) string {
+			return "ship-check: simplify\n\nok\n\n" + trailers("simplify", of, "anthropic/a/b") + "\nShip-Check-Of: " + of + "\n"
+		}, "duplicate-trailer"},
+		"extra trailer": {func(of string) string {
+			return "ship-check: simplify\n\nok\n\n" + trailers("simplify", of, "anthropic/a/b") + "\nSigned-off-by: x <x@y>\n"
+		}, "unexpected-trailers"},
+		"folded trailer": {func(of string) string {
+			return "ship-check: simplify\n\nok\n\nShip-Check: simplify\nShip-Check-Of: " + of + "\nShip-Check-Tool: anthropic/a/\n b\n"
+		}, "folded-trailer"},
+		"trailer-shaped summary hides length": {func(of string) string {
+			return "ship-check: simplify\n\n" + strings.Repeat("Note: x\n", MaxBodyLines+5) + trailers("simplify", of, "anthropic/a/b") + "\n"
+		}, "unexpected-trailers"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRepo(t)
+			r.branch()
+			a := r.code("A")
+			r.raw(tc.msg(a))
+			want(t, r.verify("simplify"), "simplify", broken(tc.want))
+		})
+	}
+}
+
+func TestMergeCannotBeACheck(t *testing.T) {
+	// Merge M has first parent P and second parent Q, keeps P's tree ("ours"),
+	// and claims to have reviewed Q.
+	r := newRepo(t)
+	r.branch()
+	r.code("A")
+	r.git("checkout", "-q", "-b", "q")
+	q := r.code("Q")
+	r.git("checkout", "-q", "feature")
+	r.code("P")
+	r.git("merge", "-q", "-s", "ours", "--no-ff", "q", "-m", "ship-check: simplify\n\nok\n\n"+trailers("simplify", q, "anthropic/a/b"))
+	want(t, r.verify("simplify"), "simplify", broken("not-single-parent"))
+}
+
+func TestBaseAheadOfBranchCannotBeClaimed(t *testing.T) {
+	// main moves on to B after feature branched at A; a check on feature that
+	// claims B must not verify, because B is not in feature's history.
+	r := newRepo(t)
+	a := r.code("A")
+	r.git("checkout", "-q", "-b", "feature")
+	r.git("checkout", "-q", "main")
+	b := r.code("B")
+	r.git("checkout", "-q", "feature")
+	r.check("simplify", b, "claims main's newer commit")
+	want(t, r.verify("simplify"), "simplify", broken("of-mismatch"))
+
+	r.check("simplify", a, "claims the real merge base")
+	want(t, r.verify("simplify"), "simplify", Valid)
+}
+
+func TestSHA256Repo(t *testing.T) {
+	r := newRepo(t)
+	r.dir = t.TempDir()
+	r.git("init", "-q", "-b", "main", "--object-format=sha256")
+	r.code("base")
+	r.branch()
+	a := r.code("A")
+	if len(a) != 64 {
+		t.Fatalf("sha = %q, want a sha256 object id", a)
+	}
+	if _, err := Commit(r.dir, "simplify", "ok", "openai/codex/gpt"); err != nil {
+		t.Fatal(err)
+	}
+	want(t, r.verify("simplify"), "simplify", Valid)
+}
+
+func TestCommitKeepsTrailerLikeSummaryOutOfTheBlock(t *testing.T) {
+	r := newRepo(t)
+	r.branch()
+	r.code("A")
+	if _, err := Commit(r.dir, "simplify", "Looks good.\nReviewed-by: someone", "anthropic/a/b"); err != nil {
+		t.Fatal(err)
+	}
+	want(t, r.verify("simplify"), "simplify", Valid)
+}
+
+func TestCommitUndoesACheckThatWouldNotVerify(t *testing.T) {
+	r := newRepo(t)
+	r.branch()
+	r.code("A")
+	before := r.git("rev-parse", "HEAD")
+	_, err := Commit(r.dir, "simplify", "above\n---\nbelow", "anthropic/a/b")
+	after := r.git("rev-parse", "HEAD")
+	if err == nil {
+		want(t, r.verify("simplify"), "simplify", Valid) // git kept the trailers; fine
+	} else if after != before {
+		t.Errorf("Commit failed (%v) but left HEAD at %s, was %s", err, after, before)
+	}
 }
 
 func TestCommitWritesTrailers(t *testing.T) {
