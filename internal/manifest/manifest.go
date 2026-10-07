@@ -81,8 +81,9 @@ func Load(root string) (*Manifest, error) {
 	}
 	defer r.Close()
 	return load(func(p string) ([]byte, error) {
-		// Refuse symlinks anywhere on the path, as LoadRev must (git cannot
-		// read through them), so lint never approves what resolve can't see.
+		// Refuse symlinks and submodules anywhere on the path, as LoadRev must
+		// (git cannot read through them), so lint never approves what resolve
+		// can't see. A directory holding a .git entry is a submodule.
 		for _, q := range prefixes(p) {
 			fi, err := r.Lstat(filepath.FromSlash(q))
 			if err != nil {
@@ -90,6 +91,11 @@ func Load(root string) (*Manifest, error) {
 			}
 			if fi.Mode()&fs.ModeSymlink != 0 {
 				return nil, fmt.Errorf("%s is a symlink; not supported", q)
+			}
+			if fi.IsDir() {
+				if _, err := r.Lstat(filepath.FromSlash(q + "/.git")); err == nil {
+					return nil, fmt.Errorf("%s is a submodule; not supported", q)
+				}
 			}
 		}
 		f, err := r.Open(filepath.FromSlash(p))
@@ -115,19 +121,25 @@ func LoadRev(repo, rev string) (*Manifest, error) {
 		// reference gate.
 		var obj string
 		for _, q := range prefixes(p) {
-			entry, err := gitOut(repo, "ls-tree", "-z", id, "--", q)
+			// :(literal) so no character in a path acts as a pattern.
+			entry, err := gitOut(repo, "ls-tree", "-z", id, "--", ":(literal)"+q)
 			if err != nil {
 				return nil, fmt.Errorf("%s at %s: %w", p, rev, err)
 			}
 			if entry == "" {
 				return nil, fs.ErrNotExist
 			}
-			f := strings.Fields(entry) // <mode> <type> <object>\t<path>\x00
+			// One record, <mode> <type> <object>\t<path>\x00, for exactly q.
+			meta, path, _ := strings.Cut(strings.TrimSuffix(entry, "\x00"), "\t")
+			f := strings.Fields(meta)
+			if path != q || len(f) != 3 {
+				return nil, fmt.Errorf("%s at %s: unexpected listing %q", q, rev, entry)
+			}
 			want := "tree"
 			if q == p {
 				want = "blob"
 			}
-			if len(f) < 3 || f[1] != want || f[0] == "120000" {
+			if f[1] != want || f[0] == "120000" {
 				kind := map[string]string{"tree": "directory", "blob": "file", "commit": "submodule"}[f[1]]
 				if f[0] == "120000" {
 					kind = "symlink"

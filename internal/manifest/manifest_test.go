@@ -236,6 +236,30 @@ func TestSymlinkedGateDirIsRefusedByLintAndResolve(t *testing.T) {
 	}
 }
 
+func TestLoadRevReadsGlobCharactersLiterally(t *testing.T) {
+	// dir "pol/l[ab]" must name that directory, never pol/la.
+	root := committedSample(t, map[string]string{
+		ConfigPath:           "gates:\n  - name: lint\n    dir: pol/l[ab]\n",
+		"pol/la/gate.yml":    "name: lint\nrun: [narrow]\ntimeout: 1m\n",
+		"pol/l[ab]/gate.yml": "name: lint\nrun: [literal]\ntimeout: 1m\n",
+	})
+	m, err := LoadRev(root, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Gates[0].Run[0]; got != "literal" {
+		t.Errorf("run = %q, want the literal directory's gate", got)
+	}
+}
+
+func TestLintRefusesASubmoduleDirectory(t *testing.T) {
+	root := copySample(t, map[string]string{
+		".tardis/gates/simplify/.git":     "gitdir: ../../../.git/modules/simplify\n",
+		".tardis/gates/simplify/gate.yml": "name: simplify\nrun: [make]\ntimeout: 1m\n",
+	})
+	wantErr(t, root, ".tardis/gates/simplify is a submodule")
+}
+
 func TestLoadRevFailsClosedOnAMissingObject(t *testing.T) {
 	// The override's directory object is gone (a partial or damaged clone):
 	// LoadRev must fail rather than read the override as absent.
