@@ -74,9 +74,11 @@ const (
 	// Each path element is a git call when loading from a commit.
 	maxDepth = 8
 	maxGlobs = 32 // applies_when patterns per gate
-	// ponytail: no real diff gets near this; a branch that does is refused
-	// rather than resolved slowly.
-	maxChanged = 200_000
+	// ponytail: no real diff gets near these; a branch that does is refused
+	// rather than resolved slowly. With maxGates and maxGlobs they bound
+	// matching to about 40 million short regexp runs.
+	maxChanged      = 20_000
+	maxChangedBytes = 4 << 20
 )
 
 var errTooLarge = fmt.Errorf("file is larger than %d bytes", maxFile)
@@ -494,15 +496,36 @@ func (m *Manifest) touchesPolicy(changed []string) bool {
 // base. Deleted and renamed-away paths are included, and so are submodule
 // changes, whatever diff.ignoreSubmodules says.
 func Changed(root, base, head string) ([]string, error) {
-	out, err := gitOut(root, "diff", "--name-only", "--no-renames", "--ignore-submodules=none", "-z", base+"..."+head)
+	// Read git's output as it comes, so an enormous diff is stopped, not
+	// buffered.
+	cmd := exec.Command("git", "--no-replace-objects", "-C", root, "diff", "--name-only", "--no-renames", "--ignore-submodules=none", "-z", base+"..."+head)
+	cmd.Env = chain.GitEnv()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
 	}
-	if n := strings.Count(out, "\x00"); n > maxChanged {
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	out, err := io.ReadAll(io.LimitReader(stdout, maxChangedBytes+1))
+	if err == nil && len(out) > maxChangedBytes {
+		err = fmt.Errorf("the diff's paths take more than %d bytes", maxChangedBytes)
+	}
+	if err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		return nil, err
+	}
+	if err := cmd.Wait(); err != nil {
+		return nil, &GitError{"git diff: " + strings.TrimSpace(stderr.String())}
+	}
+	if n := bytes.Count(out, []byte{0}); n > maxChanged {
 		return nil, fmt.Errorf("the diff changes %d paths; at most %d", n, maxChanged)
 	}
 	var paths []string
-	for _, p := range strings.Split(out, "\x00") {
+	for _, p := range strings.Split(string(out), "\x00") {
 		if p != "" {
 			paths = append(paths, p)
 		}

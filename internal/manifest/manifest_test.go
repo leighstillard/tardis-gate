@@ -445,6 +445,30 @@ func TestAppliesWhenIsCapped(t *testing.T) {
 	wantErr(t, root, fmt.Sprintf("applies_when: %d patterns; at most %d", maxGlobs+1, maxGlobs))
 }
 
+func TestChangedRefusesAnEnormousDiff(t *testing.T) {
+	root := committedSample(t, nil)
+	git := func(stdin string, args ...string) string {
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		cmd.Stdin = strings.NewReader(stdin)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@x", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@x")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	blob := git("x", "hash-object", "-w", "--stdin")
+	var index strings.Builder
+	for i := range maxChanged + 1 {
+		fmt.Fprintf(&index, "100644 %s\tmany/%d\n", blob, i)
+	}
+	git(index.String(), "update-index", "--index-info")
+	head := git("", "commit-tree", git("", "write-tree"), "-p", "main", "-m", "many")
+	if _, err := Changed(root, "main", head); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("at most %d", maxChanged)) {
+		t.Errorf("Changed on %d paths: err = %v", maxChanged+1, err)
+	}
+}
+
 func TestGateDirMustBeBelowTheRoot(t *testing.T) {
 	root := copySample(t, map[string]string{".tardis/config.yml": "gates:\n  - name: lint\n    dir: .\n", "gate.yml": "name: lint\nrun: [make]\ntimeout: 1m\n"})
 	wantErr(t, root, `gate "lint": dir: must be a directory below the repository root`)
