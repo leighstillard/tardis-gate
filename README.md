@@ -138,6 +138,10 @@ lives. Nothing about a particular repository is built into the framework.
 - **One working copy per branch.** A run hands its author steps to whichever `tardis`
   is attached to that branch. If two clones of the same branch attach at once, either may
   get a step; the wrong one fails it and the author has to ask again.
+- **One tardis version per Temporal namespace.** Each attached `tardis` also runs
+  workflow tasks for every run in the namespace. During an upgrade, an older binary can
+  pick up a run and drive it with older logic. Upgrade everyone together, or give each
+  release its own namespace.
 - **Admins still have the keys.** A repository admin can change the branch rules.
   tardis-gate makes skipping a review visible and deliberate; it doesn't take control
   away from the repository owner.

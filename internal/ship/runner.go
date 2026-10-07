@@ -161,6 +161,11 @@ func (r *Runner) sync(ctx context.Context, repoURL string) (string, error) {
 	if _, err := gitOut(ctx, dir, "fetch", "-q", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
 		return "", err
 	}
+	// fetch never moves origin/HEAD; ask the remote, since the default
+	// branch's manifest names the base.
+	if _, err := gitOut(ctx, dir, "remote", "set-head", "origin", "--auto"); err != nil {
+		return "", err
+	}
 	return dir, nil
 }
 

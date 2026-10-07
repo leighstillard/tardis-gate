@@ -189,6 +189,18 @@ func TestRefusedSuccessCheckStopsBeforeOpenPR(t *testing.T) {
 	}
 }
 
+func TestShippingTheBaseBranchIsRefused(t *testing.T) {
+	f := &fake{gates: []string{"simplify"}}
+	env := newEnv(t, f)
+	env.RegisterDelayedCallback(func() { env.CancelWorkflow() }, time.Hour) // it waits for a new head
+	onMain := in
+	onMain.Branch = "main"
+	env.ExecuteWorkflow(Ship, onMain)
+	if len(f.calls) != 0 || !contains(f.events, "resolve failed: main is the base branch; ship from a feature branch") {
+		t.Errorf("calls %v, events %v; want a refusal before any review", f.calls, f.events)
+	}
+}
+
 func TestBranchMovedAtOpenPRTellsTheAuthor(t *testing.T) {
 	// The branch moved without a tardis request, so no new head is coming.
 	f := &fake{gates: []string{"simplify"}, openErr: temporal.NewNonRetryableApplicationError("moved", "BranchMoved", nil)}

@@ -178,6 +178,9 @@ func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
 		ResolveIn{RepoURL: in.RepoURL, SHA: head}).Get(ctx, &res); err != nil {
 		return stop("resolve", "failed", reason(err), head)
 	}
+	if in.Branch == res.Base {
+		return stop("resolve", "failed", in.Branch+" is the base branch; ship from a feature branch", head)
+	}
 	gates := res.Gates
 
 	tip := head

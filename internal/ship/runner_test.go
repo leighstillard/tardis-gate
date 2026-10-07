@@ -116,6 +116,33 @@ func TestRunnerPassIsBoundToItsBaseAndClaim(t *testing.T) {
 	}
 }
 
+func TestRunnerFollowsTheDefaultBranch(t *testing.T) {
+	r, url, _, check := runnerFixture(t)
+	ctx := context.Background()
+	if out, err := r.Resolve(ctx, ResolveIn{RepoURL: url, SHA: check}); err != nil || out.Base != "main" {
+		t.Fatalf("resolve: %+v, %v", out, err)
+	}
+	// The default branch moves to trunk, whose manifest names itself the
+	// base; main stays behind with its old policy.
+	w := t.TempDir()
+	g := func(args ...string) string {
+		return strings.TrimSpace(run(t, "git", append([]string{"-C", w}, args...)...))
+	}
+	g("clone", "-q", url, ".")
+	g("config", "user.name", "t")
+	g("config", "user.email", "t@example.com")
+	g("checkout", "-q", "-b", "trunk", "origin/main")
+	if err := os.WriteFile(filepath.Join(w, ".tardis", "config.yml"), []byte("base_branch: trunk\ngates:\n  - name: simplify\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g("commit", "-q", "-am", "trunk is the base")
+	g("push", "-q", "origin", "trunk")
+	run(t, "git", "--git-dir="+strings.TrimPrefix(url, "file://"), "symbolic-ref", "HEAD", "refs/heads/trunk")
+	if out, err := r.Resolve(ctx, ResolveIn{RepoURL: url, SHA: check}); err != nil || out.Base != "trunk" {
+		t.Errorf("resolve after the default branch moved: %+v, %v; want base trunk", out, err)
+	}
+}
+
 func TestRunnerRefusesABaseItDidNotChoose(t *testing.T) {
 	r, url, base, check := runnerFixture(t)
 	ctx := context.Background()
