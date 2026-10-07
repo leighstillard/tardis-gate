@@ -477,7 +477,7 @@ func globRegexp(glob string) (*regexp.Regexp, error) {
 		glob, suffix = g, "(?:/.*)?$"
 	}
 	var b strings.Builder
-	b.WriteString("^")
+	b.WriteString("(?s)^") // . matches a newline too: git allows one in a path
 	rs := []rune(glob)
 	for i := 0; i < len(rs); i++ {
 		switch {

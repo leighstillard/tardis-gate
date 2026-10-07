@@ -85,6 +85,36 @@ func TestChainVerifyManifestUsesOneResolution(t *testing.T) {
 	}
 }
 
+func TestResolveRefusesAHeadThatBreaksThePolicy(t *testing.T) {
+	// Merged, such a head would leave main unable to resolve anything.
+	dir, git := gitRepo(t)
+	git("checkout", "-q", "main")
+	cfg := filepath.Join(dir, ".tardis", "config.yml")
+	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, []byte("gates:\n  - name: simplify\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "-A")
+	git("commit", "-q", "-m", "enrol")
+	git("checkout", "-q", "feature")
+	git("rebase", "-q", "main")
+
+	if err := os.WriteFile(cfg, []byte("gates:\n  - name: simplify\n    enable: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("commit", "-q", "-am", "break the policy")
+	if code, _, stderr := runCLI("manifest", "resolve", "main", "HEAD", "--repo", dir); code != 1 || !strings.Contains(stderr, "HEAD: ") {
+		t.Errorf("head with a broken manifest: exit %d err %q, want 1 naming HEAD", code, stderr)
+	}
+	git("rm", "-q", ".tardis/config.yml")
+	git("commit", "-q", "-m", "unenrol")
+	if code, _, stderr := runCLI("manifest", "resolve", "main", "HEAD", "--repo", dir); code != 1 || !strings.Contains(stderr, "unenrolment is an operator step") {
+		t.Errorf("head without a manifest: exit %d err %q, want 1 and an operator-step message", code, stderr)
+	}
+}
+
 func TestUnmovedCatchesAMovedHead(t *testing.T) {
 	dir, git := gitRepo(t)
 	pinned := [2]string{git("rev-parse", "main"), git("rev-parse", "HEAD")}

@@ -485,7 +485,9 @@ func TestGlobs(t *testing.T) {
 		{"web/**", "web/app.js", true},
 		{"web/**", "web/a/b/c.css", true},
 		{"web/**", "webapp/x.js", false},
-		{"web/**", "web", true}, // a submodule at web changes as the one path "web"
+		{"web/**", "web", true},                               // a submodule at web changes as the one path "web"
+		{"migrations/**", "migrations/001\nhotfix.sql", true}, // git allows a newline in a path
+		{"**/*.sql", "a\nb/x.sql", true},
 		{"web/**", "website", false},
 		{"a/**/b/**", "a/x/b", true},
 		{"**/*.tmpl", "x.tmpl", true},
