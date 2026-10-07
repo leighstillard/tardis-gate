@@ -70,8 +70,13 @@ func Verify(dir, base, head string, gates []string) (map[string]string, error) {
 		trees[c.sha] = c.tree
 	}
 
+	// The merge base can itself be a check commit (main fast-forwarded to the end
+	// of an earlier chain). Commit names the code before it, so start there too.
+	last, err := lastCode(dir, mb)
+	if err != nil {
+		return nil, err
+	}
 	state := map[string]string{}
-	lastCode := mb
 	for _, c := range commits {
 		if gate, ok := c.checkGate(); ok {
 			if len(c.parents) != 1 {
@@ -85,7 +90,7 @@ func Verify(dir, base, head string, gates []string) (map[string]string, error) {
 				if err != nil {
 					return nil, err
 				}
-				state[gate] = judge(body, trailers, gate, lastCode)
+				state[gate] = judge(body, trailers, gate, last)
 				continue
 			}
 		}
@@ -95,7 +100,7 @@ func Verify(dir, base, head string, gates []string) (map[string]string, error) {
 				state[g] = broken("superseded")
 			}
 		}
-		lastCode = c.sha
+		last = c.sha
 	}
 
 	// The verdict is about headID; refuse to hand it to a name that has moved on.

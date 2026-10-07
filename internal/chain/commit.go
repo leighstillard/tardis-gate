@@ -25,8 +25,9 @@ func CheckTool(tool string) error {
 
 // CheckGateName reports whether gate can name a check commit.
 func CheckGateName(gate string) error {
-	if gate == "" || strings.ContainsAny(gate, " \t\n/:") {
-		return fmt.Errorf("gate %q: must be a non-empty name without spaces, slashes or colons", gate)
+	// Commas would split the name in `chain verify --gates a,b`.
+	if gate == "" || strings.ContainsAny(gate, " \t\n/:,") {
+		return fmt.Errorf("gate %q: must be a non-empty name without spaces, commas, slashes or colons", gate)
 	}
 	return nil
 }

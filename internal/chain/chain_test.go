@@ -275,6 +275,22 @@ func TestBaseAheadOfBranchCannotBeClaimed(t *testing.T) {
 	want(t, r.verify("simplify"), "simplify", Valid)
 }
 
+func TestMergeBaseIsACheckCommit(t *testing.T) {
+	// main was fast-forwarded to the end of an earlier chain, so the merge base
+	// is a check commit. A new check names the code before it, as Commit does.
+	r := newRepo(t)
+	a := r.code("A")
+	old := r.check("simplify", a, "earlier chain")
+	r.branch()
+	if _, err := Commit(r.dir, "verify", "ok", "anthropic/a/b"); err != nil {
+		t.Fatal(err)
+	}
+	want(t, r.verify("verify"), "verify", Valid)
+
+	r.check("verify", old, "claims the check commit")
+	want(t, r.verify("verify"), "verify", broken("of-mismatch"))
+}
+
 func TestSHA256Repo(t *testing.T) {
 	r := newRepo(t)
 	r.dir = t.TempDir()
@@ -385,6 +401,7 @@ func TestCommitRefuses(t *testing.T) {
 		"empty summary": {"simplify", "  \n", "anthropic/claude-code/x"},
 		"long summary":  {"simplify", long, "anthropic/claude-code/x"},
 		"bad gate":      {"sim plify", "s", "anthropic/claude-code/x"},
+		"comma gate":    {"sim,plify", "s", "anthropic/claude-code/x"},
 	} {
 		if _, err := Commit(r.dir, tc.gate, tc.summary, tc.tool); err == nil {
 			t.Errorf("%s: Commit succeeded, want error", name)
