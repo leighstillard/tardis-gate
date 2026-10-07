@@ -74,6 +74,9 @@ const (
 	// Each path element is a git call when loading from a commit.
 	maxDepth = 8
 	maxGlobs = 32 // applies_when patterns per gate
+	// ponytail: no real diff gets near this; a branch that does is refused
+	// rather than resolved slowly.
+	maxChanged = 200_000
 )
 
 var errTooLarge = fmt.Errorf("file is larger than %d bytes", maxFile)
@@ -509,6 +512,9 @@ func Changed(root, base, head string) ([]string, error) {
 	out, err := gitOut(root, "diff", "--name-only", "--no-renames", "--ignore-submodules=none", "-z", base+"..."+head)
 	if err != nil {
 		return nil, err
+	}
+	if n := strings.Count(out, "\x00"); n > maxChanged {
+		return nil, fmt.Errorf("the diff changes %d paths; at most %d", n, maxChanged)
 	}
 	var paths []string
 	for _, p := range strings.Split(out, "\x00") {
