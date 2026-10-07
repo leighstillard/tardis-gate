@@ -78,6 +78,18 @@ func TestChainVerifyManifestUsesOneResolution(t *testing.T) {
 	}
 }
 
+func TestUnmovedCatchesAMovedHead(t *testing.T) {
+	dir, git := gitRepo(t)
+	pinned := [2]string{git("rev-parse", "main"), git("rev-parse", "HEAD")}
+	if err := unmoved(dir, []string{"main", "HEAD"}, pinned); err != nil {
+		t.Fatalf("nothing moved: %v", err)
+	}
+	git("commit", "-q", "--allow-empty", "-m", "pushed meanwhile")
+	if err := unmoved(dir, []string{"main", "HEAD"}, pinned); err == nil || !strings.Contains(err.Error(), "HEAD moved") {
+		t.Errorf("err = %v, want HEAD moved", err)
+	}
+}
+
 func TestChainVerifyExplicitEmptyGateList(t *testing.T) {
 	dir, _ := gitRepo(t)
 	if code, out, stderr := runCLI("chain", "verify", "main", "HEAD", "--gates", "[]", "--repo", dir); code != 0 || strings.TrimSpace(out) != "{}" {

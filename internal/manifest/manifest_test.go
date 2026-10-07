@@ -260,6 +260,20 @@ func TestLintRefusesASubmoduleDirectory(t *testing.T) {
 	wantErr(t, root, ".tardis/gates/simplify is a submodule")
 }
 
+func TestLoadRevRefusesAnOversizedFileBeforeReadingIt(t *testing.T) {
+	root := committedSample(t, map[string]string{
+		".tardis/gates/simplify/gate.yml": "name: simplify\nrun: [make]\ntimeout: 1m\n#" + strings.Repeat("x", maxFile),
+		"docs/RUNBOOK.md":                 strings.Repeat("a long runbook\n", maxFile/10), // any size is fine
+	})
+	_, err := LoadRev(root, "main")
+	if err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Errorf("err = %v, want the gate.yml refused as too large", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "verify_runbook") {
+		t.Errorf("a large runbook was refused: %v", err)
+	}
+}
+
 func TestLoadRevFailsClosedOnAMissingObject(t *testing.T) {
 	// The override's directory object is gone (a partial or damaged clone):
 	// LoadRev must fail rather than read the override as absent.

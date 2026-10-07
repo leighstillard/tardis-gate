@@ -115,6 +115,7 @@ func chainVerify(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	var list []string
+	var pinned [2]string // with --manifest, the commits base and head resolved to
 	if *fromManifest {
 		if *gates != "" {
 			fmt.Fprintln(stderr, "chain verify: use --gates or --manifest, not both")
@@ -125,7 +126,7 @@ func chainVerify(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "chain verify:", err)
 			return 2
 		}
-		pos, list = ids[:], names
+		pinned, list = ids, names
 	} else if v := strings.TrimSpace(*gates); strings.HasPrefix(v, "[") {
 		// An explicit [] is manifest resolve saying no gate applies: nothing to verify.
 		if err := json.Unmarshal([]byte(v), &list); err != nil {
@@ -143,10 +144,20 @@ func chainVerify(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
-	statuses, err := chain.Verify(*repo, pos[0], pos[1], list)
+	base, head := pos[0], pos[1]
+	if *fromManifest {
+		base, head = pinned[0], pinned[1]
+	}
+	statuses, err := chain.Verify(*repo, base, head, list)
 	if err != nil {
 		fmt.Fprintln(stderr, "chain verify:", err)
 		return 2
+	}
+	if *fromManifest {
+		if err := unmoved(*repo, pos, pinned); err != nil {
+			fmt.Fprintln(stderr, "chain verify:", err)
+			return 2
+		}
 	}
 	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "  ")
@@ -196,6 +207,17 @@ func manifestResolve(args []string, stdout, stderr io.Writer) int {
 	out, _ := json.Marshal(names) // a []string always marshals
 	fmt.Fprintln(stdout, string(out))
 	return 0
+}
+
+// unmoved reports an error if any of refs no longer names the commit pinned
+// for it: a verdict on the pinned commits says nothing about a new tip.
+func unmoved(repo string, refs []string, pinned [2]string) error {
+	for i, rev := range refs {
+		if id, err := manifest.CommitID(repo, rev); err != nil || id != pinned[i] {
+			return fmt.Errorf("%s moved during verification (was %s); verify again", rev, pinned[i])
+		}
+	}
+	return nil
 }
 
 // resolveGates resolves base and head once, so policy and diff come from the

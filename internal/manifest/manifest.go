@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -68,6 +69,8 @@ const (
 	maxGlob = 256      // one applies_when pattern
 )
 
+var errTooLarge = fmt.Errorf("file is larger than %d bytes", maxFile)
+
 // readFunc reads a repository-relative, slash-separated, local path.
 type readFunc func(path string) ([]byte, error)
 
@@ -122,17 +125,17 @@ func LoadRev(repo, rev string) (*Manifest, error) {
 		var obj string
 		for _, q := range prefixes(p) {
 			// :(literal) so no character in a path acts as a pattern.
-			entry, err := gitOut(repo, "ls-tree", "-z", id, "--", ":(literal)"+q)
+			entry, err := gitOut(repo, "ls-tree", "-l", "-z", id, "--", ":(literal)"+q)
 			if err != nil {
 				return nil, fmt.Errorf("%s at %s: %w", p, rev, err)
 			}
 			if entry == "" {
 				return nil, fs.ErrNotExist
 			}
-			// One record, <mode> <type> <object>\t<path>\x00, for exactly q.
+			// One record, <mode> <type> <object> <size>\t<path>\x00, for exactly q.
 			meta, path, _ := strings.Cut(strings.TrimSuffix(entry, "\x00"), "\t")
 			f := strings.Fields(meta)
-			if path != q || len(f) != 3 {
+			if path != q || len(f) != 4 {
 				return nil, fmt.Errorf("%s at %s: unexpected listing %q", q, rev, entry)
 			}
 			want := "tree"
@@ -147,6 +150,10 @@ func LoadRev(repo, rev string) (*Manifest, error) {
 				return nil, fmt.Errorf("%s at %s is a %s; want a %s", q, rev, kind, map[string]string{"tree": "directory", "blob": "file"}[want])
 			}
 			obj = f[2]
+			// Refuse an oversized file before reading any of it.
+			if size, err := strconv.Atoi(f[3]); q == p && (err != nil || size > maxFile) {
+				return nil, fmt.Errorf("%s at %s: %w", p, rev, errTooLarge)
+			}
 		}
 		out, err := gitOut(repo, "cat-file", "blob", obj)
 		if err != nil {
@@ -227,7 +234,8 @@ func load(read readFunc) (*Manifest, error) {
 	if cfg.VerifyRunbook != "" {
 		if p, err := local(cfg.VerifyRunbook); err != nil {
 			errs = append(errs, fmt.Errorf("verify_runbook: %w", err))
-		} else if _, err := read(p); err != nil {
+		} else if _, err := read(p); err != nil && !errors.Is(err, errTooLarge) {
+			// Only its existence matters; the runbook may be any size.
 			errs = append(errs, fmt.Errorf("verify_runbook: %s not found", cfg.VerifyRunbook))
 		} else {
 			m.VerifyRunbook = p
@@ -324,7 +332,7 @@ func loadGate(read readFunc, ref GateRef) (Gate, error) {
 // after the first, would otherwise be silently ignored.
 func decode(data []byte, v any) error {
 	if len(data) > maxFile {
-		return fmt.Errorf("file is larger than %d bytes", maxFile)
+		return errTooLarge
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
