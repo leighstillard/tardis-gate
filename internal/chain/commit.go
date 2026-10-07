@@ -57,10 +57,11 @@ func Commit(dir, gate, summary, tool string) (string, error) {
 		return "", errors.New("staged changes present; commit or unstage them first")
 	}
 	// Publish to the branch HEAD names now, so a checkout while the check is
-	// written cannot move it onto another branch. Detached: HEAD itself.
+	// written cannot move it onto another branch. A detached HEAD is refused:
+	// a concurrent checkout could reattach it between the read and the CAS.
 	ref, err := git(dir, "symbolic-ref", "-q", "HEAD")
 	if err != nil {
-		ref = "HEAD"
+		return "", errors.New("HEAD is detached; check out the branch under review first")
 	}
 	before, err := git(dir, "rev-parse", "--verify", ref+"^{commit}")
 	if err != nil {
@@ -83,7 +84,7 @@ func Commit(dir, gate, summary, tool string) (string, error) {
 	} else if s != Valid {
 		return "", fmt.Errorf("the check commit would be %s; rewrite the summary and retry", s)
 	}
-	if _, err := git(dir, "update-ref", "--no-deref", "-m", "tardis: check commit "+gate, ref, sha, before); err != nil {
+	if _, err := git(dir, "update-ref", "-m", "tardis: check commit "+gate, ref, sha, before); err != nil {
 		return "", fmt.Errorf("%s moved while the check commit was written; nothing changed: %v", ref, err)
 	}
 	return sha, nil
