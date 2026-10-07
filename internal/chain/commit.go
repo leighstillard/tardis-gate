@@ -12,7 +12,7 @@ var Vendors = []string{"anthropic", "openai", "google", "local", "other"}
 // CheckTool validates a Ship-Check-Tool value: <vendor>/<tool>/<model>.
 func CheckTool(tool string) error {
 	parts := strings.Split(tool, "/")
-	if len(parts) != 3 || parts[1] == "" || parts[2] == "" || strings.ContainsAny(tool, " \t") {
+	if len(parts) != 3 || parts[1] == "" || parts[2] == "" || strings.ContainsAny(tool, " \t\r\n") {
 		return fmt.Errorf("tool %q: want <vendor>/<tool>/<model>", tool)
 	}
 	for _, v := range Vendors {
@@ -51,9 +51,16 @@ func Commit(dir, gate, summary, tool string) (string, error) {
 	if n := len(strings.Split(summary, "\n")); n > MaxBodyLines {
 		return "", fmt.Errorf("summary is %d lines; the limit is %d", n, MaxBodyLines)
 	}
+	// Outside a repository, git diff falls back to --no-index and the HEAD
+	// checks below would read as "detached"; say what is wrong instead.
+	if _, err := git(dir, "rev-parse", "--git-dir"); err != nil {
+		return "", err
+	}
 	// The check commit never includes the index, but staged work next to a
 	// check is almost always a mistake; say so rather than leave it behind.
-	if _, err := git(dir, "diff", "--cached", "--quiet"); err != nil {
+	if staged, err := git(dir, "diff", "--cached", "--name-only"); err != nil {
+		return "", err
+	} else if staged != "" {
 		return "", errors.New("staged changes present; commit or unstage them first")
 	}
 	// Publish to the branch HEAD names now, so a checkout while the check is

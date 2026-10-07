@@ -241,7 +241,7 @@ func history(dir string, args ...string) ([]commit, error) {
 		commits = append(commits, commit{sha: f[0], tree: f[1], parents: f[2:]})
 	}
 
-	out, err = gitRaw(dir, append([]string{"log", "--no-show-signature", "--no-notes", "-z", "--format=%H %s"}, args...)...)
+	out, err = gitRaw(dir, append([]string{"log", "--no-show-signature", "--no-notes", "--encoding=UTF-8", "-z", "--format=%H %s"}, args...)...)
 	if err != nil {
 		return nil, err
 	}

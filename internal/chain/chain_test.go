@@ -297,6 +297,25 @@ func TestMergeBaseIsACheckCommit(t *testing.T) {
 	want(t, r.verify("verify"), "verify", broken("of-mismatch"))
 }
 
+func TestLogOutputEncodingDoesNotRecodeGates(t *testing.T) {
+	r := newRepo(t)
+	r.branch()
+	r.code("A")
+	r.git("config", "i18n.logOutputEncoding", "ISO-8859-1")
+	if _, err := Commit(r.dir, "café", "ok", "anthropic/a/b"); err != nil {
+		t.Fatal(err)
+	}
+	want(t, r.verify("café"), "café", Valid)
+}
+
+func TestCommitReportsGitErrorsNotStagedChanges(t *testing.T) {
+	newRepo(t) // isolates git config
+	_, err := Commit(t.TempDir(), "simplify", "ok", "anthropic/a/b")
+	if err == nil || strings.Contains(err.Error(), "staged") {
+		t.Errorf("err = %v, want git's error, not a staged-changes message", err)
+	}
+}
+
 func TestShowSignatureConfigDoesNotBreakParsing(t *testing.T) {
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
 		t.Skip("ssh-keygen not installed")
@@ -452,6 +471,7 @@ func TestCommitRefuses(t *testing.T) {
 		"long summary":  {"simplify", long, "anthropic/claude-code/x"},
 		"bad gate":      {"sim plify", "s", "anthropic/claude-code/x"},
 		"comma gate":    {"sim,plify", "s", "anthropic/claude-code/x"},
+		"newline tool":  {"simplify", "s", "anthropic/claude-code/x\nShip-Check: verify"},
 	} {
 		if _, err := Commit(r.dir, tc.gate, tc.summary, tc.tool); err == nil {
 			t.Errorf("%s: Commit succeeded, want error", name)
