@@ -274,6 +274,57 @@ func TestLoadRevRefusesAnOversizedFileBeforeReadingIt(t *testing.T) {
 	}
 }
 
+func TestLintRefusesAnUninitialisedSubmodule(t *testing.T) {
+	// A gitlink in the index over an empty directory: lint must agree with
+	// LoadRev and refuse it, not fall back to the reference gate.
+	root := committedSample(t, nil)
+	sub := committedSample(t, nil)
+	out, err := exec.Command("git", "-C", sub, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitlink := "160000," + strings.TrimSpace(string(out)) + ",.tardis/gates/simplify"
+	if out, err := exec.Command("git", "-C", root, "update-index", "--add", "--cacheinfo", gitlink).CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".tardis", "gates", "simplify"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wantErr(t, root, ".tardis/gates/simplify is a submodule")
+}
+
+func TestLoadRevIgnoresReplaceRefs(t *testing.T) {
+	// A local replacement for main's commit drops every gate but simplify;
+	// the committed policy must still be read.
+	root := committedSample(t, nil)
+	for _, k := range []string{"GIT_AUTHOR", "GIT_COMMITTER"} {
+		t.Setenv(k+"_NAME", "t")
+		t.Setenv(k+"_EMAIL", "t@x")
+	}
+	git := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	if err := write(filepath.Join(root, ConfigPath), "gates:\n  - name: simplify\n"); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "-A")
+	tree := git("write-tree")
+	fake := git("commit-tree", tree, "-m", "replacement")
+	git("replace", git("rev-parse", "main"), fake)
+	m, err := LoadRev(root, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := names(m.Gates); len(got) != 4 {
+		t.Errorf("gates = %v; a replace ref changed the committed policy", got)
+	}
+}
+
 func TestLoadRevFailsClosedOnAMissingObject(t *testing.T) {
 	// The override's directory object is gone (a partial or damaged clone):
 	// LoadRev must fail rather than read the override as absent.

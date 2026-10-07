@@ -86,8 +86,12 @@ func Load(root string) (*Manifest, error) {
 	return load(func(p string) ([]byte, error) {
 		// Refuse symlinks and submodules anywhere on the path, as LoadRev must
 		// (git cannot read through them), so lint never approves what resolve
-		// can't see. A directory holding a .git entry is a submodule.
+		// can't see. A submodule is a directory holding a .git entry or, if
+		// not yet initialised, a gitlink in the index over an empty directory.
 		for _, q := range prefixes(p) {
+			if indexGitlink(root, q) {
+				return nil, fmt.Errorf("%s is a submodule; not supported", q)
+			}
 			fi, err := r.Lstat(filepath.FromSlash(q))
 			if err != nil {
 				return nil, err
@@ -390,9 +394,18 @@ func Changed(root, base, head string) ([]string, error) {
 	return paths, nil
 }
 
-// gitOut returns git's raw stdout.
+// indexGitlink reports whether the index at root records q as a submodule.
+// Outside a repository there is no index, and nothing to report.
+func indexGitlink(root, q string) bool {
+	out, err := gitOut(root, "ls-files", "--stage", "-z", "--", ":(literal)"+q)
+	meta, path, _ := strings.Cut(strings.TrimSuffix(out, "\x00"), "\t")
+	return err == nil && path == q && strings.HasPrefix(meta, "160000 ")
+}
+
+// gitOut returns git's raw stdout. Replacement objects are off: a local
+// refs/replace entry must not change what a commit ID means.
 func gitOut(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd := exec.Command("git", append([]string{"--no-replace-objects", "-C", dir}, args...)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
