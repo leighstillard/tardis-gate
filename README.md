@@ -154,6 +154,21 @@ Each spec is one page. Its acceptance checks are commands you can run.
 5. [PR gate, ruleset and author events](specs/tardis-gate-pr.md): opening the PR, marking
    other PRs incomplete, the branch rules, and merging.
 
+## Install
+
+Use a tagged release, never a checkout. On a developer machine:
+
+```bash
+go install github.com/leighstillard/tardis-gate/cmd/tardis@v0.1.0
+```
+
+On a runner host, download the release binary and check its build provenance first:
+
+```bash
+gh release download v0.1.0 -R leighstillard/tardis-gate -p 'tardis_linux_amd64'
+gh attestation verify tardis_linux_amd64 -R leighstillard/tardis-gate
+```
+
 ## Secrets
 
 Nothing secret belongs in this repository. The runner reads its keys from its own
