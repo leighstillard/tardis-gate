@@ -261,6 +261,7 @@ func gitOut(ctx context.Context, dir string, args ...string) (string, error) {
 	}
 	args = append([]string{"--no-replace-objects"}, args...)
 	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Env = chain.GitEnv() // a hook's GIT_DIR must not override -C
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
