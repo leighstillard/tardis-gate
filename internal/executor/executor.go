@@ -2,7 +2,6 @@
 package executor
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -23,7 +22,7 @@ type Job struct {
 // Result is how a job ended.
 type Result struct {
 	ExitCode int
-	Output   string // combined stdout and stderr
+	Output   string // the last MaxOutput bytes of combined stdout and stderr
 }
 
 // Executor runs a job. hb records progress a retry can resume from; executors
@@ -51,8 +50,8 @@ func (Local) Run(ctx context.Context, job Job, _ func(string)) (Result, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 5 * time.Second
-	var out bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &out
+	out := &tailBuffer{}
+	cmd.Stdout, cmd.Stderr = out, out
 	err := cmd.Run()
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && ctx.Err() == nil {
@@ -63,6 +62,23 @@ func (Local) Run(ctx context.Context, job Job, _ func(string)) (Result, error) {
 	}
 	return Result{Output: out.String()}, nil
 }
+
+// MaxOutput is how much of a job's output is kept: its end, where the error is.
+const MaxOutput = 64 << 10
+
+// tailBuffer keeps the last MaxOutput bytes written to it, so a job that
+// prints without end cannot use up memory.
+type tailBuffer struct{ b []byte }
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.b = append(t.b, p...)
+	if len(t.b) > 2*MaxOutput {
+		t.b = append(t.b[:0], t.b[len(t.b)-MaxOutput:]...)
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) String() string { return string(t.b[max(0, len(t.b)-MaxOutput):]) }
 
 // ErrNotImplemented is returned by executors whose contract is defined but not built.
 var ErrNotImplemented = errors.New("executor: not implemented")

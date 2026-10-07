@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/activity"
@@ -265,7 +266,7 @@ func attach(c client.Client, wfID, repo, remote, branch, tool, head string, stdo
 	for {
 		select {
 		case e := <-events:
-			if e.Kind != "completed" && about(repo, head, e) {
+			if e.Kind != "completed" && about(repo, currentHead(c, wfID, head), e) {
 				return 1
 			}
 			// A head requested as the run finished starts it again, so stay
@@ -280,6 +281,22 @@ func attach(c client.Client, wfID, repo, remote, branch, tool, head string, stdo
 			return 130
 		}
 	}
+}
+
+// currentHead is head, or for tardis wait, which requested none, the run's
+// own: by the time an event arrives this process serves the workflow, so the
+// query is answered. "" if it cannot tell, so every event counts.
+func currentHead(c client.Client, wfID, head string) string {
+	if head != "" {
+		return head
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	v, err := c.QueryWorkflow(ctx, wfID, "", ship.QueryHead)
+	if err != nil || v.Get(&head) != nil {
+		return ""
+	}
+	return head
 }
 
 // about reports whether e concerns head: its commit contains head. A

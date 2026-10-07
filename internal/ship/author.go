@@ -76,6 +76,17 @@ func (a *Author) AuthorReview(ctx context.Context, in AuthorReviewIn) (string, e
 	return gitOut(ctx, a.Dir, "rev-parse", "HEAD")
 }
 
+// onFirstParent reports whether ref itself once pointed at id: id is on its
+// first-parent line, not merely reachable, as a merged branch's commits are.
+// ponytail: the last 1000 commits of ref; an older id is refused.
+func onFirstParent(ctx context.Context, dir, ref, id string) (bool, error) {
+	out, err := gitOut(ctx, dir, "rev-list", "--first-parent", "--max-count=1000", ref)
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(strings.Fields(out), id), nil
+}
+
 // checkBase makes sure base is the branch the remote's default branch names
 // as base_branch, and baseID a commit it has held. The workflow names both,
 // and anyone who can start one could otherwise point this machine at gate
@@ -104,14 +115,9 @@ func (a *Author) checkBase(ctx context.Context, base, baseID string) error {
 	if base != m.BaseBranch {
 		return malformed(fmt.Sprintf("base %q is not %s's base branch %q", base, a.Remote, m.BaseBranch))
 	}
-	// The base branch itself pointed at baseID: it is on the branch's first-
-	// parent line, not merely reachable, as a merged branch's commits are.
-	// ponytail: the last 1000 base commits; an older base is refused.
-	line1, err := gitOut(ctx, a.Dir, "rev-list", "--first-parent", "--max-count=1000", "refs/remotes/"+a.Remote+"/"+base)
-	if err != nil {
+	if ok, err := onFirstParent(ctx, a.Dir, "refs/remotes/"+a.Remote+"/"+base, baseID); err != nil {
 		return err
-	}
-	if !slices.Contains(strings.Fields(line1), baseID) {
+	} else if !ok {
 		return malformed("base commit " + baseID + " was never " + a.Remote + "/" + base + " itself")
 	}
 	return nil

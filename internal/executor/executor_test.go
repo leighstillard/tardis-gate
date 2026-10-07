@@ -66,3 +66,14 @@ func TestActionsNotImplemented(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+func TestOutputKeepsOnlyItsEnd(t *testing.T) {
+	// A job that prints without end must not use up memory.
+	res, err := Local{}.Run(context.Background(), Job{Argv: []string{"sh", "-c", "head -c 1000000 /dev/zero | tr '\\0' x; echo; echo the end"}}, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Output) != MaxOutput || !strings.HasSuffix(res.Output, "the end\n") {
+		t.Errorf("output: %d bytes ending %q; want %d ending with the last line", len(res.Output), res.Output[max(0, len(res.Output)-20):], MaxOutput)
+	}
+}

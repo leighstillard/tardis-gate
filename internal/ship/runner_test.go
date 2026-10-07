@@ -181,6 +181,25 @@ func TestRunnerRefusesAHeadThatWouldStrandTheBase(t *testing.T) {
 	}
 }
 
+func TestRunnerRefusesAMergedSideCommitAsBase(t *testing.T) {
+	// Reachable from main through a merge, but main never pointed at it.
+	r, url, _, check := runnerFixture(t)
+	w := t.TempDir()
+	g := func(args ...string) string {
+		return strings.TrimSpace(run(t, "git", append([]string{"-C", w, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...))
+	}
+	g("clone", "-q", url, ".")
+	g("checkout", "-q", "-b", "side", "origin/main")
+	g("commit", "-q", "--allow-empty", "-m", "side")
+	side := g("rev-parse", "HEAD")
+	g("checkout", "-q", "main")
+	g("merge", "-q", "--no-ff", "-m", "merge side", "side")
+	g("push", "-q", "origin", "main")
+	if _, err := r.Rerun(context.Background(), RerunIn{RepoURL: url, Base: "main", BaseID: side, Tip: check, Gate: "simplify"}); err == nil || !strings.Contains(err.Error(), "was never main itself") {
+		t.Errorf("rerun with a merged side commit as base: err = %v", err)
+	}
+}
+
 func TestRunnerIgnoresATagNamedLikeTheBase(t *testing.T) {
 	// A tag called origin/main would win over the remote-tracking branch if
 	// the runner named refs in short.
@@ -204,7 +223,7 @@ func TestRunnerRefusesABaseItDidNotChoose(t *testing.T) {
 		t.Errorf("rerun against feature: err = %v", err)
 	}
 	// A base commit that main never held (here: the check itself).
-	if _, err := r.Rerun(ctx, RerunIn{RepoURL: url, Base: "main", BaseID: check, Tip: check, Gate: "simplify"}); err == nil || !strings.Contains(err.Error(), "never on main") {
+	if _, err := r.Rerun(ctx, RerunIn{RepoURL: url, Base: "main", BaseID: check, Tip: check, Gate: "simplify"}); err == nil || !strings.Contains(err.Error(), "was never main itself") {
 		t.Errorf("rerun with a foreign base commit: err = %v", err)
 	}
 }

@@ -119,8 +119,10 @@ func checkBase(ctx context.Context, dir, base, baseID string) error {
 		return temporal.NewNonRetryableApplicationError(
 			fmt.Sprintf("base %q is not this repository's base branch %q", base, m.BaseBranch), "Malformed", nil)
 	}
-	if _, err := gitOut(ctx, dir, "merge-base", "--is-ancestor", baseID, "refs/remotes/origin/"+base); err != nil {
-		return temporal.NewNonRetryableApplicationError(baseID+" was never on "+base, "Malformed", nil)
+	if ok, err := onFirstParent(ctx, dir, "refs/remotes/origin/"+base, baseID); err != nil {
+		return err
+	} else if !ok {
+		return temporal.NewNonRetryableApplicationError(baseID+" was never "+base+" itself", "Malformed", nil)
 	}
 	return nil
 }
