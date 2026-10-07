@@ -56,8 +56,7 @@ type Gate struct {
 
 // Manifest is the enabled gates of a repository, in order.
 type Manifest struct {
-	Root          string
-	VerifyRunbook string // absolute path, "" if unset
+	VerifyRunbook string // joined onto the root passed to Load; "" if unset
 	Gates         []Gate
 }
 
@@ -80,9 +79,10 @@ func Load(root string) (*Manifest, error) {
 		}
 	}
 
-	m := &Manifest{Root: root}
+	m := &Manifest{}
 	var errs []error
 	seen := map[string]bool{}
+	verifyEnabled := false
 	for _, ref := range cfg.Gates {
 		if ref.Name == "" {
 			errs = append(errs, errors.New("gates: entry with no name"))
@@ -96,6 +96,7 @@ func Load(root string) (*Manifest, error) {
 		if ref.Enabled != nil && !*ref.Enabled {
 			continue
 		}
+		verifyEnabled = verifyEnabled || ref.Name == "verify"
 		g, err := loadGate(root, ref)
 		if err != nil {
 			errs = append(errs, err)
@@ -112,22 +113,13 @@ func Load(root string) (*Manifest, error) {
 		if _, err := os.Stat(m.VerifyRunbook); err != nil {
 			errs = append(errs, fmt.Errorf("verify_runbook: %s not found", cfg.VerifyRunbook))
 		}
-	} else if m.has("verify") {
+	} else if verifyEnabled {
 		errs = append(errs, errors.New("verify_runbook: required when the verify gate is enabled"))
 	}
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
 	return m, nil
-}
-
-func (m *Manifest) has(name string) bool {
-	for _, g := range m.Gates {
-		if g.Name == name {
-			return true
-		}
-	}
-	return false
 }
 
 // loadGate finds the gate's gate.yml: the configured dir, then
