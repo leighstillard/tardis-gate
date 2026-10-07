@@ -71,6 +71,8 @@ const (
 	// ponytail: far below the 500 stacked checks chain verify looks back
 	// through, so every accepted policy can complete.
 	maxGates = 64
+	// Each path element is a git call when loading from a commit.
+	maxDepth = 8
 )
 
 var errTooLarge = fmt.Errorf("file is larger than %d bytes", maxFile)
@@ -327,11 +329,14 @@ func load(read readFunc) (*Manifest, error) {
 }
 
 // local cleans a repository-relative path and refuses one that could leave
-// the repository.
+// the repository, or is too deep to look up cheaply.
 func local(p string) (string, error) {
 	c := path.Clean(filepath.ToSlash(p))
 	if !filepath.IsLocal(filepath.FromSlash(c)) {
 		return "", fmt.Errorf("%q must be a relative path inside the repository", p)
+	}
+	if strings.Count(c, "/") >= maxDepth {
+		return "", fmt.Errorf("%q is more than %d directories deep", p, maxDepth)
 	}
 	return c, nil
 }

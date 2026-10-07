@@ -422,6 +422,11 @@ func TestGateCountIsCapped(t *testing.T) {
 	wantErr(t, root, fmt.Sprintf("gates: %d listed; at most %d", maxGates+1, maxGates))
 }
 
+func TestConfiguredPathsAreShallow(t *testing.T) {
+	root := copySample(t, map[string]string{".tardis/config.yml": "gates:\n  - name: lint\n    dir: a/b/c/d/e/f/g/h/i\n"})
+	wantErr(t, root, `gate "lint": dir: "a/b/c/d/e/f/g/h/i" is more than 8 directories deep`)
+}
+
 func TestGateDirMustBeBelowTheRoot(t *testing.T) {
 	root := copySample(t, map[string]string{".tardis/config.yml": "gates:\n  - name: lint\n    dir: .\n", "gate.yml": "name: lint\nrun: [make]\ntimeout: 1m\n"})
 	wantErr(t, root, `gate "lint": dir: must be a directory below the repository root`)
