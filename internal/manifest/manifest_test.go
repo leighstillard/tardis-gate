@@ -151,6 +151,66 @@ func TestReportsEveryProblem(t *testing.T) {
 	}
 }
 
+func TestRejectsUnsafeInput(t *testing.T) {
+	for name, tc := range map[string]struct {
+		edits map[string]string
+		want  string
+	}{
+		"runbook escapes":  {map[string]string{ConfigPath: "verify_runbook: ../../etc/passwd\n"}, "must be a relative path inside the repository"},
+		"dir escapes":      {map[string]string{ConfigPath: "gates:\n  - name: lint\n    dir: ../x\n"}, "must be a relative path inside the repository"},
+		"absolute dir":     {map[string]string{ConfigPath: "gates:\n  - name: lint\n    dir: /etc\n"}, "must be a relative path inside the repository"},
+		"slash in name":    {map[string]string{ConfigPath: "gates:\n  - name: ../simplify\n"}, "without spaces"},
+		"comma in name":    {map[string]string{ConfigPath: "gates:\n  - name: a,b\n"}, "without spaces"},
+		"two documents":    {map[string]string{ConfigPath: "gates:\n  - name: simplify\n---\ngates: []\n"}, "only one YAML document"},
+		"huge glob":        {map[string]string{ConfigPath: "gates:\n  - name: simplify\n    applies_when: [\"" + strings.Repeat("*", maxGlob+1) + "\"]\n"}, "pattern must be 1 to"},
+		"oversized config": {map[string]string{ConfigPath: "gates:\n  - name: simplify\n#" + strings.Repeat("x", maxFile)}, "larger than"},
+	} {
+		_, err := Load(copySample(t, tc.edits))
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want %q", name, err, tc.want)
+		}
+	}
+}
+
+func TestLoadDoesNotFollowSymlinksOut(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "secret.md")
+	if err := write(outside, "secret"); err != nil {
+		t.Fatal(err)
+	}
+	root := copySample(t, map[string]string{"docs/RUNBOOK.md": ""})
+	if err := os.Symlink(outside, filepath.Join(root, "docs", "RUNBOOK.md")); err != nil {
+		t.Fatal(err)
+	}
+	wantErr(t, root, "verify_runbook: docs/RUNBOOK.md not found")
+}
+
+func TestLoadRevReadsTheCommittedPolicy(t *testing.T) {
+	root := copySample(t, nil)
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"add", "-A"}, {"commit", "-q", "-m", "base"}} {
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@x", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@x")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	// An uncommitted edit changes Load but not LoadRev.
+	if err := write(filepath.Join(root, ConfigPath), "gates:\n  - name: simplify\n"); err != nil {
+		t.Fatal(err)
+	}
+	m, err := LoadRev(root, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := names(m.Gates), []string{"simplify", "verify", "design", "review"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("LoadRev gates = %v, want %v", got, want)
+	}
+	if _, err := LoadRev(root, "nosuch"); err == nil {
+		t.Error("LoadRev of a missing revision succeeded")
+	}
+}
+
 func TestLocalGateOverridesReference(t *testing.T) {
 	root := copySample(t, map[string]string{
 		".tardis/gates/simplify/gate.yml": "name: simplify\nrun: [make, simplify]\ntimeout: 2m\n",
@@ -198,7 +258,11 @@ func TestGlobs(t *testing.T) {
 		{"docs/ünï.md", "docs/ünï.md", true},
 		{"a.b", "aXb", false},
 	} {
-		if got := globRegexp(tc.glob).MatchString(tc.path); got != tc.want {
+		re, err := globRegexp(tc.glob)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := re.MatchString(tc.path); got != tc.want {
 			t.Errorf("glob %q on %q = %v, want %v", tc.glob, tc.path, got, tc.want)
 		}
 	}

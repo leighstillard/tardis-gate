@@ -174,7 +174,8 @@ func manifestResolve(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return code
 	}
-	m, err := manifest.Load(*repo)
+	// The policy comes from base, so a branch cannot drop the gates it must pass.
+	m, err := manifest.LoadRev(*repo, pos[0])
 	if err != nil {
 		fmt.Fprintln(stderr, "manifest resolve:", strings.ReplaceAll(err.Error(), "\n", "; "))
 		return 1

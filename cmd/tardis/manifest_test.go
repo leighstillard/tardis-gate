@@ -41,6 +41,17 @@ func TestManifestLintAndResolveFeedChainVerify(t *testing.T) {
 	if code != 1 || !strings.Contains(out, `"simplify": "missing"`) || !strings.Contains(out, `"verify": "missing"`) {
 		t.Errorf("chain verify with resolved gates: exit %d out %q err %q", code, out, stderr)
 	}
+
+	// A branch that rewrites the config, committed or not, cannot drop gates:
+	// resolve reads the policy from base.
+	cfg := filepath.Join(dir, ".tardis", "config.yml")
+	if err := os.WriteFile(cfg, []byte("gates:\n  - name: simplify\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("commit", "-q", "-am", "drop verify")
+	if code, out, stderr := runCLI("manifest", "resolve", "main", "HEAD", "--repo", dir); code != 0 || out != resolved {
+		t.Errorf("resolve after the branch edits the config: exit %d out %q err %q, want %q", code, out, stderr, resolved)
+	}
 }
 
 func TestManifestLintNotEnrolled(t *testing.T) {
