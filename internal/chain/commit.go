@@ -55,29 +55,58 @@ func Commit(dir, gate, summary, tool string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	before, err := git(dir, "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
 	// The trailers get their own paragraph so they never merge with a
-	// trailer-like last line of the summary.
+	// trailer-like last line of the summary. Hooks are off (prepare-commit-msg
+	// ignores --no-verify) and cleanup keeps "#" lines, so the message is ours.
 	trailers := TrailerCheck + ": " + gate + "\n" + TrailerOf + ": " + of + "\n" + TrailerTool + ": " + tool
-	if _, err := git(dir, "commit", "--allow-empty", "--no-verify", "-q", "--cleanup=strip",
-		"-m", SubjectPrefix+gate, "-m", summary, "-m", trailers); err != nil {
+	if _, err := git(dir, "-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "--no-verify", "-q",
+		"--cleanup=whitespace", "-m", SubjectPrefix+gate, "-m", summary, "-m", trailers); err != nil {
 		return "", err
 	}
 	head, err := git(dir, "rev-parse", "HEAD")
 	if err != nil {
 		return "", err
 	}
-	body, block, err := message(dir, head)
+	if s, err := asVerified(dir, head, before, gate, of); err != nil || s != Valid {
+		// Only our own empty commit is undone; the index and work tree stay as they were.
+		if _, rerr := git(dir, "reset", "-q", "--soft", before); rerr != nil {
+			return "", fmt.Errorf("check commit came out %s (%v) and could not be undone: %v", s, err, rerr)
+		}
+		if err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("the check commit came out %s; rewrite the summary and retry", s)
+	}
+	return head, nil
+}
+
+// asVerified judges commit sha exactly as Verify would on top of parent.
+func asVerified(dir, sha, parent, gate, of string) (string, error) {
+	cs, err := history(dir, "-1", sha)
 	if err != nil {
 		return "", err
 	}
-	if s := judge(body, block, gate, of); s != Valid {
-		// Only our own empty commit is undone; the index and work tree stay as they were.
-		if _, rerr := git(dir, "reset", "-q", "--soft", "HEAD^"); rerr != nil {
-			return "", fmt.Errorf("check commit came out %s and could not be undone: %v", s, rerr)
-		}
-		return "", fmt.Errorf("summary makes the check commit %s; rewrite it and retry", s)
+	c := cs[0]
+	if g, ok := c.checkGate(); !ok || g != gate {
+		return broken("subject-mismatch"), nil
 	}
-	return head, nil
+	if len(c.parents) != 1 || c.parents[0] != parent {
+		return broken("not-single-parent"), nil
+	}
+	if empty, err := isEmpty(dir, c, map[string]string{}); err != nil {
+		return "", err
+	} else if !empty {
+		return broken("not-empty"), nil
+	}
+	body, block, err := message(dir, sha)
+	if err != nil {
+		return "", err
+	}
+	return judge(body, block, gate, of), nil
 }
 
 // maxCheckRun bounds the walk back over stacked check commits.

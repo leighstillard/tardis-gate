@@ -301,6 +301,43 @@ func TestCommitKeepsTrailerLikeSummaryOutOfTheBlock(t *testing.T) {
 	want(t, r.verify("simplify"), "simplify", Valid)
 }
 
+func TestCommitKeepsMarkdownHeadings(t *testing.T) {
+	r := newRepo(t)
+	r.branch()
+	r.code("A")
+	if _, err := Commit(r.dir, "simplify", "# No findings\n\nAll good.", "anthropic/a/b"); err != nil {
+		t.Fatal(err)
+	}
+	if body := r.git("log", "-1", "--format=%b"); !strings.HasPrefix(body, "# No findings") {
+		t.Errorf("body lost the heading:\n%s", body)
+	}
+}
+
+func TestCommitIgnoresPrepareCommitMsgHook(t *testing.T) {
+	r := newRepo(t)
+	r.branch()
+	r.code("A")
+	hook := filepath.Join(r.dir, ".git", "hooks", "prepare-commit-msg")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nsed -i '1s/^/[JIRA-1] /' \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Commit(r.dir, "simplify", "ok", "anthropic/a/b"); err != nil {
+		t.Fatal(err)
+	}
+	want(t, r.verify("simplify"), "simplify", Valid)
+}
+
+func TestTrailerSeparatorsConfigDoesNotHideTrailers(t *testing.T) {
+	r := newRepo(t)
+	r.branch()
+	r.code("A")
+	r.git("config", "trailer.separators", "=")
+	if _, err := Commit(r.dir, "simplify", "ok", "anthropic/a/b"); err != nil {
+		t.Fatal(err)
+	}
+	want(t, r.verify("simplify"), "simplify", Valid)
+}
+
 func TestCommitUndoesACheckThatWouldNotVerify(t *testing.T) {
 	r := newRepo(t)
 	r.branch()

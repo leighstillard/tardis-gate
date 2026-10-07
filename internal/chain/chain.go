@@ -266,7 +266,8 @@ func message(dir, sha string) (body, trailers string, err error) {
 	if body, err = gitRaw(dir, "log", "-1", "--format=%b", sha); err != nil {
 		return "", "", err
 	}
-	if trailers, err = gitRaw(dir, "log", "-1", "--format=%(trailers)", sha); err != nil {
+	// Pin the separator so a user's trailer.separators cannot hide our trailers.
+	if trailers, err = gitRaw(dir, "-c", "trailer.separators=:", "log", "-1", "--format=%(trailers)", sha); err != nil {
 		return "", "", err
 	}
 	return body, trailers, nil
