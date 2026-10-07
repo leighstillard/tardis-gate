@@ -107,7 +107,7 @@ func checkCommit(args []string, stdout, stderr io.Writer) int {
 
 func chainVerify(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("chain verify", flag.ContinueOnError)
-	gates := fs.String("gates", "", "gates that must be valid: a,b,c or the JSON array from manifest resolve")
+	gates := fs.String("gates", "", "gates that must be valid: a,b,c, or manifest resolve's output, which also pins base and head")
 	fromManifest := fs.Bool("manifest", false, "resolve the gates from base's manifest and verify them against the same commits")
 	repo := fs.String("repo", ".", "repository directory")
 	pos, code, ok := parse(fs, "chain verify <base> <head> (--gates <a,b,c> | --manifest)", args, 2, stderr)
@@ -115,7 +115,8 @@ func chainVerify(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	var list []string
-	var pinned [2]string // with --manifest, the commits base and head resolved to
+	var pinned [2]string // the commits a resolved gate list belongs to
+	bound := false       // whether list is bound to pinned
 	if *fromManifest {
 		if *gates != "" {
 			fmt.Fprintln(stderr, "chain verify: use --gates or --manifest, not both")
@@ -126,13 +127,23 @@ func chainVerify(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "chain verify:", err)
 			return 2
 		}
-		pinned, list = ids, names
-	} else if v := strings.TrimSpace(*gates); strings.HasPrefix(v, "[") {
-		// An explicit [] is manifest resolve saying no gate applies: nothing to verify.
-		if err := json.Unmarshal([]byte(v), &list); err != nil {
-			fmt.Fprintln(stderr, "chain verify: --gates:", err)
+		pinned, list, bound = ids, names, true
+	} else if v := strings.TrimSpace(*gates); strings.HasPrefix(v, "{") {
+		// manifest resolve's output: the list is only good for the commits it
+		// was resolved on, so base and head must still name them.
+		var r resolved
+		if err := json.Unmarshal([]byte(v), &r); err != nil || r.Base == "" || r.Head == "" {
+			fmt.Fprintln(stderr, "chain verify: --gates: not manifest resolve output:", err)
 			return 2
 		}
+		pinned, list, bound = [2]string{r.Base, r.Head}, r.Gates, true
+		if err := unmoved(*repo, pos, pinned); err != nil {
+			fmt.Fprintf(stderr, "chain verify: --gates was resolved for other commits (%v); resolve again\n", err)
+			return 2
+		}
+	} else if strings.HasPrefix(v, "[") {
+		fmt.Fprintln(stderr, "chain verify: --gates: pass manifest resolve's output as is, or a,b,c")
+		return 2
 	} else {
 		for _, g := range strings.Split(v, ",") {
 			if g = strings.TrimSpace(g); g != "" {
@@ -145,7 +156,7 @@ func chainVerify(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	base, head := pos[0], pos[1]
-	if *fromManifest {
+	if bound {
 		base, head = pinned[0], pinned[1]
 	}
 	statuses, err := chain.Verify(*repo, base, head, list)
@@ -153,9 +164,9 @@ func chainVerify(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "chain verify:", err)
 		return 2
 	}
-	if *fromManifest {
+	if bound {
 		if err := unmoved(*repo, pos, pinned); err != nil {
-			fmt.Fprintln(stderr, "chain verify:", err)
+			fmt.Fprintf(stderr, "chain verify: moved during verification (%v); verify again\n", err)
 			return 2
 		}
 	}
@@ -199,22 +210,32 @@ func manifestResolve(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return code
 	}
-	_, names, code, err := resolveGates(*repo, pos[0], pos[1])
+	ids, names, code, err := resolveGates(*repo, pos[0], pos[1])
 	if err != nil {
 		fmt.Fprintln(stderr, "manifest resolve:", err)
 		return code
 	}
-	out, _ := json.Marshal(names) // a []string always marshals
+	out, _ := json.Marshal(resolved{Base: ids[0], Head: ids[1], Gates: names}) // always marshals
 	fmt.Fprintln(stdout, string(out))
 	return 0
+}
+
+// resolved is manifest resolve's output: the gates, in order, and the commits
+// they were resolved for. chain verify --gates takes it as is.
+type resolved struct {
+	Base  string   `json:"base"`
+	Head  string   `json:"head"`
+	Gates []string `json:"gates"`
 }
 
 // unmoved reports an error if any of refs no longer names the commit pinned
 // for it: a verdict on the pinned commits says nothing about a new tip.
 func unmoved(repo string, refs []string, pinned [2]string) error {
 	for i, rev := range refs {
-		if id, err := manifest.CommitID(repo, rev); err != nil || id != pinned[i] {
-			return fmt.Errorf("%s moved during verification (was %s); verify again", rev, pinned[i])
+		if id, err := manifest.CommitID(repo, rev); err != nil {
+			return err
+		} else if id != pinned[i] {
+			return fmt.Errorf("%s is now %.12s, not %.12s", rev, id, pinned[i])
 		}
 	}
 	return nil
@@ -231,7 +252,9 @@ func resolveGates(repo, base, head string) (ids [2]string, names []string, code 
 		}
 	}
 	m, err := manifest.LoadRev(repo, ids[0])
-	if err != nil {
+	if errors.Is(err, manifest.ErrNotEnrolled) {
+		return ids, nil, 1, fmt.Errorf("%s is not enrolled: commit %s to it first; enrolment is an operator step that tardis does not gate", base, manifest.ConfigPath)
+	} else if err != nil {
 		return ids, nil, 1, errors.New(strings.ReplaceAll(err.Error(), "\n", "; "))
 	}
 	changed, err := manifest.Changed(repo, ids[0], ids[1])

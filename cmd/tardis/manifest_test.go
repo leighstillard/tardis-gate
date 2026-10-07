@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,8 +33,9 @@ func TestManifestLintAndResolveFeedChainVerify(t *testing.T) {
 		t.Fatalf("lint: exit %d out %q err %q", code, out, stderr)
 	}
 	code, resolved, stderr := runCLI("manifest", "resolve", "main", "HEAD", "--repo", dir)
-	if code != 0 || resolved != "[\"simplify\",\"verify\"]\n" {
-		t.Fatalf("resolve: exit %d out %q err %q", code, resolved, stderr)
+	want := fmt.Sprintf(`{"base":%q,"head":%q,"gates":["simplify","verify"]}`+"\n", git("rev-parse", "main"), git("rev-parse", "HEAD"))
+	if code != 0 || resolved != want {
+		t.Fatalf("resolve: exit %d out %q err %q, want %q", code, resolved, stderr, want)
 	}
 
 	// The resolved list goes straight into chain verify.
@@ -49,8 +51,13 @@ func TestManifestLintAndResolveFeedChainVerify(t *testing.T) {
 		t.Fatal(err)
 	}
 	git("commit", "-q", "-am", "drop verify")
-	if code, out, stderr := runCLI("manifest", "resolve", "main", "HEAD", "--repo", dir); code != 0 || out != resolved {
-		t.Errorf("resolve after the branch edits the config: exit %d out %q err %q, want %q", code, out, stderr, resolved)
+	if code, out, stderr := runCLI("manifest", "resolve", "main", "HEAD", "--repo", dir); code != 0 || !strings.Contains(out, `"gates":["simplify","verify"]`) {
+		t.Errorf("resolve after the branch edits the config: exit %d out %q err %q, want simplify and verify", code, out, stderr)
+	}
+
+	// The list resolved before that commit is bound to the old head: refused.
+	if code, _, stderr := runCLI("chain", "verify", "main", "HEAD", "--gates", strings.TrimSpace(resolved), "--repo", dir); code != 2 || !strings.Contains(stderr, "resolved for other commits") {
+		t.Errorf("stale resolved list: exit %d err %q, want 2 and a resolve-again message", code, stderr)
 	}
 }
 
@@ -85,15 +92,19 @@ func TestUnmovedCatchesAMovedHead(t *testing.T) {
 		t.Fatalf("nothing moved: %v", err)
 	}
 	git("commit", "-q", "--allow-empty", "-m", "pushed meanwhile")
-	if err := unmoved(dir, []string{"main", "HEAD"}, pinned); err == nil || !strings.Contains(err.Error(), "HEAD moved") {
-		t.Errorf("err = %v, want HEAD moved", err)
+	if err := unmoved(dir, []string{"main", "HEAD"}, pinned); err == nil || !strings.Contains(err.Error(), "HEAD is now") {
+		t.Errorf("err = %v, want HEAD is now …", err)
 	}
 }
 
-func TestChainVerifyExplicitEmptyGateList(t *testing.T) {
-	dir, _ := gitRepo(t)
-	if code, out, stderr := runCLI("chain", "verify", "main", "HEAD", "--gates", "[]", "--repo", dir); code != 0 || strings.TrimSpace(out) != "{}" {
-		t.Errorf("--gates []: exit %d out %q err %q, want 0 and {}", code, out, stderr)
+func TestChainVerifyEmptyResolution(t *testing.T) {
+	dir, git := gitRepo(t)
+	none := fmt.Sprintf(`{"base":%q,"head":%q,"gates":[]}`, git("rev-parse", "main"), git("rev-parse", "HEAD"))
+	if code, out, stderr := runCLI("chain", "verify", "main", "HEAD", "--gates", none, "--repo", dir); code != 0 || strings.TrimSpace(out) != "{}" {
+		t.Errorf("no gate applies: exit %d out %q err %q, want 0 and {}", code, out, stderr)
+	}
+	if code, _, _ := runCLI("chain", "verify", "main", "HEAD", "--gates", "[]", "--repo", dir); code != 2 {
+		t.Errorf("--gates []: exit %d, want 2 (an unbound list)", code)
 	}
 	if code, _, _ := runCLI("chain", "verify", "main", "HEAD", "--gates", "", "--repo", dir); code != 2 {
 		t.Errorf("--gates \"\": exit %d, want 2", code)
