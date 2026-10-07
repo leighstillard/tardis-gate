@@ -54,6 +54,16 @@ func TestManifestLintAndResolveFeedChainVerify(t *testing.T) {
 	}
 }
 
+func TestChainVerifyExplicitEmptyGateList(t *testing.T) {
+	dir, _ := gitRepo(t)
+	if code, out, stderr := runCLI("chain", "verify", "main", "HEAD", "--gates", "[]", "--repo", dir); code != 0 || strings.TrimSpace(out) != "{}" {
+		t.Errorf("--gates []: exit %d out %q err %q, want 0 and {}", code, out, stderr)
+	}
+	if code, _, _ := runCLI("chain", "verify", "main", "HEAD", "--gates", "", "--repo", dir); code != 2 {
+		t.Errorf("--gates \"\": exit %d, want 2", code)
+	}
+}
+
 func TestManifestLintNotEnrolled(t *testing.T) {
 	code, _, stderr := runCLI("manifest", "lint", "--repo", t.TempDir())
 	if code != 1 || !strings.Contains(stderr, "not enrolled") {

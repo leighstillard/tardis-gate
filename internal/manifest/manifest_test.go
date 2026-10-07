@@ -164,6 +164,10 @@ func TestRejectsUnsafeInput(t *testing.T) {
 		"two documents":    {map[string]string{ConfigPath: "gates:\n  - name: simplify\n---\ngates: []\n"}, "only one YAML document"},
 		"huge glob":        {map[string]string{ConfigPath: "gates:\n  - name: simplify\n    applies_when: [\"" + strings.Repeat("*", maxGlob+1) + "\"]\n"}, "pattern must be 1 to"},
 		"oversized config": {map[string]string{ConfigPath: "gates:\n  - name: simplify\n#" + strings.Repeat("x", maxFile)}, "larger than"},
+		"glob class":       {map[string]string{ConfigPath: "gates:\n  - name: simplify\n    applies_when: [\"web/*.[jt]s\"]\n"}, "only *, ** and ? are supported"},
+		"glob alternative": {map[string]string{ConfigPath: "gates:\n  - name: simplify\n    applies_when: [\"{web,app}/**\"]\n"}, "only *, ** and ? are supported"},
+		"absolute glob":    {map[string]string{ConfigPath: "gates:\n  - name: simplify\n    applies_when: [\"/web/**\"]\n"}, "must be a relative path"},
+		"parent glob":      {map[string]string{ConfigPath: "gates:\n  - name: simplify\n    applies_when: [\"../web/**\"]\n"}, "must be a relative path"},
 	} {
 		_, err := Load(copySample(t, tc.edits))
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -206,6 +210,23 @@ func TestLoadRevFailsClosedOnANonBlobGate(t *testing.T) {
 	root := committedSample(t, map[string]string{".tardis/gates/simplify/gate.yml/x": "x"})
 	if _, err := LoadRev(root, "main"); err == nil || !strings.Contains(err.Error(), ".tardis/gates/simplify/gate.yml") {
 		t.Errorf("err = %v, want a failure naming the override", err)
+	}
+}
+
+func TestLoadRevFailsClosedOnAMissingObject(t *testing.T) {
+	// The override's directory object is gone (a partial or damaged clone):
+	// LoadRev must fail rather than read the override as absent.
+	root := committedSample(t, map[string]string{".tardis/gates/simplify/gate.yml": "name: simplify\nrun: [make]\ntimeout: 1m\n"})
+	out, err := exec.Command("git", "-C", root, "rev-parse", "main:.tardis/gates/simplify").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := strings.TrimSpace(string(out))
+	if err := os.Remove(filepath.Join(root, ".git", "objects", tree[:2], tree[2:])); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadRev(root, "main"); err == nil {
+		t.Error("LoadRev succeeded with the override's tree missing; want an error, not the reference gate")
 	}
 }
 

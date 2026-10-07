@@ -98,16 +98,24 @@ func LoadRev(repo, rev string) (*Manifest, error) {
 		return nil, err
 	}
 	return load(func(p string) ([]byte, error) {
-		out, err := gitOut(repo, "cat-file", "blob", id+":"+p)
-		if err == nil {
-			return []byte(out), nil
+		// Only an empty, successful listing means "not found"; any git failure,
+		// or an entry that is not a file, must not fall back to a reference gate.
+		entry, err := gitOut(repo, "ls-tree", "-z", id, "--", p)
+		if err != nil {
+			return nil, fmt.Errorf("%s at %s: %w", p, rev, err)
 		}
-		// Only a path absent from the tree is "not found"; a tree, a corrupt
-		// object or any other failure must not fall back to a reference gate.
-		if _, e := gitOut(repo, "rev-parse", "--verify", "--quiet", id+":"+p); e != nil {
+		if entry == "" {
 			return nil, fs.ErrNotExist
 		}
-		return nil, fmt.Errorf("%s at %s: %w", p, rev, err)
+		f := strings.Fields(entry) // <mode> <type> <object>\t<path>\x00
+		if len(f) < 3 || f[1] != "blob" {
+			return nil, fmt.Errorf("%s at %s is not a file", p, rev)
+		}
+		out, err := gitOut(repo, "cat-file", "blob", f[2])
+		if err != nil {
+			return nil, fmt.Errorf("%s at %s: %w", p, rev, err)
+		}
+		return []byte(out), nil
 	})
 }
 
@@ -338,10 +346,20 @@ func gitOut(dir string, args ...string) (string, error) {
 
 // globRegexp compiles a path glob: * and ? stay within one path segment,
 // ** crosses segments, and "**/" also matches no directory at all.
+// Anything else a glob reader might expect is refused rather than matched
+// literally, so a pattern can never silently match less than it appears to.
 // ponytail: no [classes] or {alternatives}; add them when a config needs one.
 func globRegexp(glob string) (*regexp.Regexp, error) {
 	if glob == "" || len(glob) > maxGlob {
 		return nil, fmt.Errorf("applies_when: pattern must be 1 to %d characters", maxGlob)
+	}
+	if strings.ContainsAny(glob, `[]{}!\`) {
+		return nil, fmt.Errorf("applies_when %q: only *, ** and ? are supported", glob)
+	}
+	for _, seg := range strings.Split(glob, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return nil, fmt.Errorf("applies_when %q: must be a relative path with no empty, . or .. segments", glob)
+		}
 	}
 	var b strings.Builder
 	b.WriteString("^")

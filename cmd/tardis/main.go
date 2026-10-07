@@ -114,6 +114,7 @@ func chainVerify(args []string, stdout, stderr io.Writer) int {
 	}
 	var list []string
 	if v := strings.TrimSpace(*gates); strings.HasPrefix(v, "[") {
+		// An explicit [] is manifest resolve saying no gate applies: nothing to verify.
 		if err := json.Unmarshal([]byte(v), &list); err != nil {
 			fmt.Fprintln(stderr, "chain verify: --gates:", err)
 			return 2
@@ -124,10 +125,10 @@ func chainVerify(args []string, stdout, stderr io.Writer) int {
 				list = append(list, g)
 			}
 		}
-	}
-	if len(list) == 0 {
-		fmt.Fprintln(stderr, "chain verify: --gates is required")
-		return 2
+		if len(list) == 0 {
+			fmt.Fprintln(stderr, "chain verify: --gates is required")
+			return 2
+		}
 	}
 	statuses, err := chain.Verify(*repo, pos[0], pos[1], list)
 	if err != nil {
