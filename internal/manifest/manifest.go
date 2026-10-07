@@ -179,8 +179,11 @@ func LoadRev(repo, rev string) (*Manifest, error) {
 				return nil, fmt.Errorf("%s at %s is a %s; want a %s", q, rev, kind, map[string]string{"tree": "directory", "blob": "file"}[want])
 			}
 			obj = f[2]
-			// Refuse an oversized file before reading any of it.
-			if size, err := strconv.Atoi(f[3]); q == p && (err != nil || size > maxFile) {
+			// Refuse an oversized file before reading any of it. git lists the
+			// size of an object it cannot read as "BAD".
+			if size, err := strconv.Atoi(f[3]); q == p && err != nil {
+				return nil, &GitError{fmt.Sprintf("%s at %s: git ls-tree: object %s is unreadable", p, rev, obj)}
+			} else if q == p && size > maxFile {
 				return nil, fmt.Errorf("%s at %s: %w", p, rev, errTooLarge)
 			}
 		}
@@ -263,9 +266,10 @@ func load(read readFunc) (*Manifest, error) {
 	if cfg.VerifyRunbook != "" {
 		if p, err := local(cfg.VerifyRunbook); err != nil {
 			errs = append(errs, fmt.Errorf("verify_runbook: %w", err))
-		} else if _, err := read(p); err != nil && !errors.Is(err, errTooLarge) {
-			// Only its existence matters; the runbook may be any size.
+		} else if _, err := read(p); errors.Is(err, fs.ErrNotExist) {
 			errs = append(errs, fmt.Errorf("verify_runbook: %s not found", cfg.VerifyRunbook))
+		} else if err != nil && !errors.Is(err, errTooLarge) { // only its existence matters
+			errs = append(errs, fmt.Errorf("verify_runbook: %w", err))
 		} else {
 			m.VerifyRunbook = p
 		}
@@ -301,8 +305,10 @@ func loadGate(read readFunc, ref GateRef) (Gate, error) {
 			return Gate{}, fmt.Errorf("gate %q: dir: %w", ref.Name, err)
 		}
 		src = path.Join(dir, "gate.yml")
-		if data, err = read(src); err != nil {
+		if data, err = read(src); errors.Is(err, fs.ErrNotExist) {
 			return Gate{}, fmt.Errorf("gate %q: %s not found", ref.Name, src)
+		} else if err != nil {
+			return Gate{}, fmt.Errorf("gate %q: %w", ref.Name, err)
 		}
 	default:
 		src = path.Join(".tardis", "gates", ref.Name, "gate.yml")
@@ -448,7 +454,9 @@ func gitOut(dir string, args ...string) (string, error) {
 }
 
 // globRegexp compiles a path glob: * and ? stay within one path segment,
-// ** crosses segments, and "**/" also matches no directory at all.
+// ** crosses segments, "**/" also matches no directory at all, and a trailing
+// "/**" also matches the directory itself, which is how git names a submodule
+// that changed.
 // Anything else a glob reader might expect is refused rather than matched
 // literally, so a pattern can never silently match less than it appears to.
 // ponytail: no [classes] or {alternatives}; add them when a config needs one.
@@ -463,6 +471,10 @@ func globRegexp(glob string) (*regexp.Regexp, error) {
 		if seg == "" || seg == "." || seg == ".." {
 			return nil, fmt.Errorf("applies_when %q: must be a relative path with no empty, . or .. segments", glob)
 		}
+	}
+	suffix := "$"
+	if g, ok := strings.CutSuffix(glob, "/**"); ok {
+		glob, suffix = g, "(?:/.*)?$"
 	}
 	var b strings.Builder
 	b.WriteString("^")
@@ -485,7 +497,7 @@ func globRegexp(glob string) (*regexp.Regexp, error) {
 			b.WriteString(regexp.QuoteMeta(string(rs[i])))
 		}
 	}
-	b.WriteString("$")
+	b.WriteString(suffix)
 	re, err := regexp.Compile(b.String())
 	if err != nil {
 		return nil, fmt.Errorf("applies_when %q: %w", glob, err)

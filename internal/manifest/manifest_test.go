@@ -186,7 +186,7 @@ func TestLoadDoesNotFollowSymlinksOut(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(root, "docs", "RUNBOOK.md")); err != nil {
 		t.Fatal(err)
 	}
-	wantErr(t, root, "verify_runbook: docs/RUNBOOK.md not found")
+	wantErr(t, root, "verify_runbook: docs/RUNBOOK.md is a symlink; not supported")
 }
 
 // committedSample is copySample committed to main in a new repository.
@@ -384,6 +384,32 @@ func TestLoadRevFailsClosedOnAMissingObject(t *testing.T) {
 	}
 }
 
+func TestGitFailuresKeepTheirType(t *testing.T) {
+	// A missing object behind an explicit dir or the runbook is git failing,
+	// not the manifest being wrong.
+	for _, tc := range []struct {
+		edits map[string]string
+		obj   string
+	}{
+		{map[string]string{".tardis/config.yml": "verify_runbook: docs/RUNBOOK.md\ngates:\n  - name: lint\n    dir: tools/lint\n", "tools/lint/gate.yml": "name: lint\nrun: [make]\ntimeout: 1m\n"}, "main:tools/lint"},
+		{nil, "main:docs/RUNBOOK.md"},
+	} {
+		root := committedSample(t, tc.edits)
+		out, err := exec.Command("git", "-C", root, "rev-parse", tc.obj).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := strings.TrimSpace(string(out))
+		if err := os.Remove(filepath.Join(root, ".git", "objects", id[:2], id[2:])); err != nil {
+			t.Fatal(err)
+		}
+		_, err = LoadRev(root, "main")
+		if ge := (*GitError)(nil); !errors.As(err, &ge) {
+			t.Errorf("%s missing: err = %v; want a GitError", tc.obj, err)
+		}
+	}
+}
+
 func TestExactNameRefusesAnotherSpelling(t *testing.T) {
 	// A case-insensitive filesystem would open Tools for tools; git would not.
 	dir := t.TempDir()
@@ -459,6 +485,9 @@ func TestGlobs(t *testing.T) {
 		{"web/**", "web/app.js", true},
 		{"web/**", "web/a/b/c.css", true},
 		{"web/**", "webapp/x.js", false},
+		{"web/**", "web", true}, // a submodule at web changes as the one path "web"
+		{"web/**", "website", false},
+		{"a/**/b/**", "a/x/b", true},
 		{"**/*.tmpl", "x.tmpl", true},
 		{"**/*.tmpl", "a/b/x.tmpl", true},
 		{"*.go", "main.go", true},
