@@ -59,6 +59,9 @@ func Commit(dir, gate, summary, tool string) (string, error) {
 	if _, err := git(dir, "rev-parse", "--git-dir"); err != nil {
 		return "", err
 	}
+	if err := refuseShallow(dir); err != nil {
+		return "", err
+	}
 	// The check commit never includes the index, but staged work next to a
 	// check is almost always a mistake; say so rather than leave it behind.
 	if staged, err := gitRaw(dir, "diff", "--cached", "--name-only", "-z"); err != nil {
@@ -120,11 +123,11 @@ func asVerified(dir, sha, parent, gate, of string) (string, error) {
 	} else if !empty {
 		return broken("not-empty"), nil
 	}
-	body, err := message(dir, sha)
+	subject, body, err := message(dir, sha)
 	if err != nil {
 		return "", err
 	}
-	return judge(body, gate, of), nil
+	return judge(subject, body, gate, of), nil
 }
 
 // maxCheckRun bounds the walk back over stacked check commits.

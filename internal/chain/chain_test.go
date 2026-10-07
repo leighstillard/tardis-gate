@@ -350,6 +350,41 @@ func TestCommitRefusesANonBranchHead(t *testing.T) {
 	}
 }
 
+func TestNULInARawSubjectIsBroken(t *testing.T) {
+	// git refuses NUL in messages, but hash-object --literally does not; %s
+	// stops at the NUL, so the raw subject must be checked too.
+	r := newRepo(t)
+	r.branch()
+	a := r.code("A")
+	tree, parent := r.git("rev-parse", a+"^{tree}"), a
+	obj := "tree " + tree + "\nparent " + parent + "\nauthor t <t@example.com> 0 +0000\ncommitter t <t@example.com> 0 +0000\n\n" +
+		"ship-check: simplify\x00junk\n\nok\n\n" + trailers("simplify", a, "anthropic/a/b") + "\n"
+	cmd := exec.Command("git", "-C", r.dir, "hash-object", "-t", "commit", "-w", "--literally", "--stdin")
+	cmd.Stdin = strings.NewReader(obj)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	r.git("update-ref", "HEAD", strings.TrimSpace(string(out)))
+	want(t, r.verify("simplify"), "simplify", broken("subject-mismatch"))
+}
+
+func TestShallowCloneIsRefused(t *testing.T) {
+	r := newRepo(t)
+	r.branch()
+	r.code("A")
+	shallow := t.TempDir()
+	if out, err := exec.Command("git", "clone", "-q", "--depth", "1", "--no-local", "file://"+r.dir, shallow).CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if _, err := Verify(shallow, "HEAD", "HEAD", []string{"simplify"}); err == nil || !strings.Contains(err.Error(), "shallow") {
+		t.Errorf("Verify in a shallow clone: err = %v", err)
+	}
+	if _, err := Commit(shallow, "simplify", "ok", "anthropic/a/b"); err == nil || !strings.Contains(err.Error(), "shallow") {
+		t.Errorf("Commit in a shallow clone: err = %v", err)
+	}
+}
+
 func TestCommitEncodingDoesNotBreakUnicodeGates(t *testing.T) {
 	r := newRepo(t)
 	r.branch()

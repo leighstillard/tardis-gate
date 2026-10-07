@@ -79,6 +79,13 @@ func TestCheckCommitThenVerify(t *testing.T) {
 	}
 }
 
+func TestFlagsBetweenPositionals(t *testing.T) {
+	dir, _ := gitRepo(t)
+	if code, out, stderr := runCLI("chain", "verify", "--repo", dir, "main", "HEAD", "--gates", "simplify"); code != 1 || !strings.Contains(out, `"simplify": "missing"`) {
+		t.Errorf("exit %d out %q err %q, want 1 and simplify missing", code, out, stderr)
+	}
+}
+
 func TestUsageErrorsExit2(t *testing.T) {
 	for _, args := range [][]string{
 		nil,

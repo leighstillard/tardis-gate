@@ -40,9 +40,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return 2
 }
 
-// parse parses flags that may follow positional arguments, as in
-// `tardis chain verify main HEAD --gates a,b`. On failure it returns the exit
-// code: 0 for -h, 2 for a usage error.
+// parse parses flags before, between or after positional arguments, as in
+// `tardis chain verify --repo r main HEAD --gates a,b`. On failure it returns
+// the exit code: 0 for -h, 2 for a usage error.
 func parse(fs *flag.FlagSet, synopsis string, args []string, npos int, stderr io.Writer) ([]string, int, bool) {
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
@@ -50,15 +50,18 @@ func parse(fs *flag.FlagSet, synopsis string, args []string, npos int, stderr io
 		fs.PrintDefaults()
 	}
 	var pos []string
-	for len(pos) < npos && len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+	for {
+		if err := fs.Parse(args); err == flag.ErrHelp {
+			return nil, 0, false
+		} else if err != nil {
+			return nil, 2, false
+		}
+		// Parse stops at the first positional; take it and parse on.
+		if args = fs.Args(); len(args) == 0 {
+			break
+		}
 		pos, args = append(pos, args[0]), args[1:]
 	}
-	if err := fs.Parse(args); err == flag.ErrHelp {
-		return nil, 0, false
-	} else if err != nil {
-		return nil, 2, false
-	}
-	pos = append(pos, fs.Args()...)
 	if len(pos) != npos {
 		fmt.Fprintf(stderr, "%s: want %d argument(s), got %d\n", fs.Name(), npos, len(pos))
 		fs.Usage()

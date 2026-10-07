@@ -46,6 +46,9 @@ func (c commit) checkGate() (string, bool) {
 // and anything else is code. A later check for a gate replaces an earlier one,
 // and a code commit supersedes every valid check before it.
 func Verify(dir, base, head string, gates []string) (map[string]string, error) {
+	if err := refuseShallow(dir); err != nil {
+		return nil, err
+	}
 	// Resolve both names once; every later read uses the object IDs, so a ref
 	// that moves mid-run cannot mix two histories.
 	baseID, err := git(dir, "rev-parse", "--verify", "--quiet", base+"^{commit}")
@@ -87,11 +90,11 @@ func Verify(dir, base, head string, gates []string) (map[string]string, error) {
 			} else if !empty {
 				state[gate] = broken("not-empty")
 			} else {
-				body, err := message(dir, c.sha)
+				subject, body, err := message(dir, c.sha)
 				if err != nil {
 					return nil, err
 				}
-				state[gate] = judge(body, gate, last)
+				state[gate] = judge(subject, body, gate, last)
 				continue
 			}
 		}
@@ -122,10 +125,12 @@ func Verify(dir, base, head string, gates []string) (map[string]string, error) {
 
 // judge checks an empty, single-parent check commit's message, after the
 // subject line, against the schema.
-func judge(body, gate, lastCode string) string {
+func judge(subject, body, gate, lastCode string) string {
 	summary, block := splitTrailers(body)
 	t, reason := parseTrailers(block)
 	switch {
+	case subject != SubjectPrefix+gate: // the raw first line, not git's %s
+		return broken("subject-mismatch")
 	case reason != "":
 		return broken(reason)
 	case CheckGateName(gate) != nil:
@@ -266,14 +271,25 @@ func history(dir string, args ...string) ([]commit, error) {
 // message returns one commit's message after its first line, byte for byte
 // from the commit object. `git log --format=%b` would drop leading blank and
 // space-only lines, which then escape the line limit.
-func message(dir, sha string) (string, error) {
+func message(dir, sha string) (subject, rest string, err error) {
 	obj, err := gitRaw(dir, "cat-file", "commit", sha)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	_, msg, _ := strings.Cut(obj, "\n\n") // headers end at the first blank line
-	_, rest, _ := strings.Cut(msg, "\n")
-	return rest, nil
+	subject, rest, _ = strings.Cut(msg, "\n")
+	return subject, rest, nil
+}
+
+// refuseShallow refuses a shallow clone: git reports its boundary commits as
+// having no parents, so a check at the boundary would read as code.
+func refuseShallow(dir string) error {
+	if s, err := git(dir, "rev-parse", "--is-shallow-repository"); err != nil {
+		return err
+	} else if s == "true" {
+		return errors.New("shallow clone: run git fetch --unshallow first")
+	}
+	return nil
 }
 
 // isOID reports whether s is a full SHA-1 or SHA-256 object ID in hex.
