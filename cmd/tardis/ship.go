@@ -281,7 +281,7 @@ func attach(c client.Client, wfID, repo, remote, branch, tool string, stdout, st
 	for {
 		select {
 		case e := <-events:
-			if e.Kind != "completed" && current(c, wfID, e) {
+			if e.Kind != "completed" && current(c, wfID, e, stderr) {
 				return 1
 			}
 			// A head requested as the run finished starts it again, so stay
@@ -302,19 +302,28 @@ func attach(c client.Client, wfID, repo, remote, branch, tool string, stdout, st
 // are delivered at least once, so one from an earlier pass, even about the
 // same commit, can arrive again and must not end this attachment. By the
 // time an event arrives this process serves the workflow, so the query is
-// answered; if it is not, the event counts.
-func current(c client.Client, wfID string, e ship.Event) bool {
+// normally answered; if it cannot be confirmed, stay attached.
+func current(c client.Client, wfID string, e ship.Event, stderr io.Writer) bool {
 	if e.Pass == "" {
 		return true
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	var pass string
-	v, err := c.QueryWorkflow(ctx, wfID, "", ship.QueryPass)
-	if err != nil || v.Get(&pass) != nil {
-		return true
+	for try := 0; try < 3; try++ {
+		if try > 0 {
+			time.Sleep(2 * time.Second)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		var pass string
+		v, err := c.QueryWorkflow(ctx, wfID, "", ship.QueryPass)
+		if err == nil {
+			err = v.Get(&pass)
+		}
+		cancel()
+		if err == nil {
+			return pass == e.Pass
+		}
 	}
-	return pass == e.Pass
+	fmt.Fprintln(stderr, "could not tell whether that is about the current pass; staying attached (Ctrl-C to detach)")
+	return false
 }
 
 func runner(args []string, stdout, stderr io.Writer) int {
