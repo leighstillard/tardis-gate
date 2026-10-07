@@ -138,8 +138,10 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 				}
 				return url, nil
 			}
-			// The branch moved past the reviewed head, so no PR for it; the
-			// request that pushed the new head signals it, awaited below.
+			// The branch moved past the reviewed head, so no PR for it. Say so:
+			// a push made without tardis request signals nothing.
+			notify(ctx, authorQ, Event{Kind: "failed", Gate: "open-pr", SHA: res.Tip,
+				Detail: "the branch moved past the reviewed head; run tardis request on the new head"})
 		}
 
 		// Rejected or failed: wait for the author to push a fix and ask again.

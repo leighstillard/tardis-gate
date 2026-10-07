@@ -57,6 +57,11 @@ func TestRunnerPostsSuccessOnlyForItsOwnPass(t *testing.T) {
 	if err := r.PostCheck(ctx, success); err != nil {
 		t.Errorf("success after a passing re-run: %v", err)
 	}
+	// A restarted runner still knows what it passed.
+	restarted := &Runner{Repos: r.Repos, WorkDir: r.WorkDir, RerunCmd: r.RerunCmd, Exec: r.Exec, Log: io.Discard}
+	if err := restarted.PostCheck(ctx, success); err != nil {
+		t.Errorf("success after a restart: %v", err)
+	}
 	// Failures are posted as asked: they can only block.
 	if err := r.PostCheck(ctx, CheckIn{RepoURL: url, SHA: check, Gate: "verify", Conclusion: "failure"}); err != nil {
 		t.Errorf("failure: %v", err)

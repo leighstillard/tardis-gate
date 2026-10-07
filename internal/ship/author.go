@@ -33,6 +33,7 @@ type Author struct {
 // as is; otherwise the gate's run command is executed and its findings become
 // the check commit's summary. It returns the new branch tip.
 func (a *Author) AuthorReview(ctx context.Context, in AuthorReviewIn) (string, error) {
+	defer heartbeat(ctx)() // from the start: a slow fetch or diff must not look like a dead author
 	tip, err := gitOut(ctx, a.Dir, "rev-parse", "HEAD")
 	if err != nil {
 		return "", err
@@ -108,7 +109,6 @@ func (a *Author) review(ctx context.Context, in AuthorReviewIn, base string) err
 		return err
 	}
 
-	defer heartbeat(ctx)()
 	res, err := a.Exec.Run(ctx, executor.Job{
 		Argv: gate.Run,
 		Dir:  a.Dir,

@@ -240,7 +240,10 @@ func attach(c client.Client, wfID, repo, remote, branch, tool string, stdout, st
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
-	var closed chan error // set once "completed" is seen
+	// Watch for the run closing from the start, however it ends: completed,
+	// timed out or terminated.
+	closed := make(chan error, 1)
+	go func() { closed <- c.GetWorkflow(context.Background(), wfID, "").Get(context.Background(), nil) }()
 	for {
 		select {
 		case e := <-events:
@@ -249,8 +252,6 @@ func attach(c client.Client, wfID, repo, remote, branch, tool string, stdout, st
 			}
 			// A head requested as the run finished starts it again, so stay
 			// attached, serving its reviews, until the run has really closed.
-			closed = make(chan error, 1)
-			go func() { closed <- c.GetWorkflow(context.Background(), wfID, "").Get(context.Background(), nil) }()
 		case err := <-closed:
 			if err != nil {
 				return 1
@@ -266,11 +267,12 @@ func attach(c client.Client, wfID, repo, remote, branch, tool string, stdout, st
 func runner(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("runner", flag.ContinueOnError)
 	home, _ := os.UserCacheDir()
-	workDir := fs.String("work-dir", filepath.Join(home, "tardis", "runner"), "where repository clones live")
+	workDir := fs.String("work-dir", filepath.Join(home, "tardis", "runner"), "where repository clones and the record of passed re-runs live")
 	rerun := fs.String("rerun-cmd", "", "shell command run per gate; exit 0 passes, 1 rejects (stand-in until provider re-runs). "+
 		"It runs in a clean checkout of the base, never the branch's code: read the change with git through $TARDIS_SHA and $TARDIS_BASE")
 	repos := map[string]bool{}
-	fs.Func("repo", "repository URL this runner serves, exactly as authors' remotes name it (repeatable, at least one)", func(u string) error {
+	fs.Func("repo", "repository URL this runner serves, exactly as authors' remotes name it (repeatable, at least one). "+
+		"Runners share one task queue per Temporal namespace, so every runner in a namespace must serve the same set", func(u string) error {
 		repos[u] = true
 		return nil
 	})

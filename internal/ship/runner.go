@@ -33,9 +33,9 @@ type Runner struct {
 
 	mu     sync.Mutex
 	locks  map[string]*sync.Mutex // one per repository URL, guarding its clone
-	passed map[string]bool        // passKey of every re-run this runner passed
-	// ponytail: in memory; a restart mid-run refuses success until the gate is
-	// re-run. Persist it when check runs become real (build 4).
+	passed map[string]bool        // passKey of every re-run this runner passed; also in WorkDir/passes
+	// ponytail: one runner host owns its passes file; replicas would need a
+	// shared store.
 }
 
 // passKey names what a re-run judged: the gate, the base commit it ran on,
@@ -47,7 +47,60 @@ func passKey(dir, repoURL, gate, baseID, tip string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return strings.Join([]string{repoURL, gate, baseID, check}, "\x00"), nil
+	sum := sha256.Sum256([]byte(strings.Join([]string{repoURL, gate, baseID, check}, "\x00")))
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// loadPasses reads WorkDir/passes once, so a restarted runner still knows
+// every re-run it passed. Call with r.mu held.
+func (r *Runner) loadPasses() error {
+	if r.passed != nil {
+		return nil
+	}
+	b, err := os.ReadFile(filepath.Join(r.WorkDir, "passes"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	r.passed = map[string]bool{}
+	for _, k := range strings.Fields(string(b)) {
+		r.passed[k] = true
+	}
+	return nil
+}
+
+// recordPass notes a passed re-run, on disk before in memory.
+func (r *Runner) recordPass(key string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.loadPasses(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(r.WorkDir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filepath.Join(r.WorkDir, "passes"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(f, key)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	r.passed[key] = true
+	return nil
+}
+
+func (r *Runner) hasPass(key string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	err := r.loadPasses()
+	return r.passed[key], err
 }
 
 // checkBase refuses a base the runner did not choose. The workflow, which an
@@ -204,12 +257,9 @@ func (r *Runner) Rerun(ctx context.Context, in RerunIn) (Verdict, error) {
 		if err != nil {
 			return Verdict{}, err
 		}
-		r.mu.Lock()
-		if r.passed == nil {
-			r.passed = map[string]bool{}
+		if err := r.recordPass(key); err != nil {
+			return Verdict{}, err
 		}
-		r.passed[key] = true
-		r.mu.Unlock()
 		return Verdict{Pass: true}, nil
 	case 1:
 		return Verdict{Reason: tail(res.Output)}, nil
@@ -241,9 +291,10 @@ func (r *Runner) PostCheck(ctx context.Context, in CheckIn) error {
 		if err != nil {
 			return err
 		}
-		r.mu.Lock()
-		passed := r.passed[key]
-		r.mu.Unlock()
+		passed, err := r.hasPass(key)
+		if err != nil {
+			return err
+		}
 		if st[in.Gate] != chain.Valid || !passed {
 			return temporal.NewNonRetryableApplicationError(fmt.Sprintf(
 				"refusing tardis/%s success on %s: chain %s, re-run passed here: %v", in.Gate, in.SHA, st[in.Gate], passed), "Rejected", nil)

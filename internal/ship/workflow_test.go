@@ -25,6 +25,7 @@ type fake struct {
 	checkOn []string // "<name> <conclusion>@<sha>"
 	openPRs int
 	onOpen  func()                            // called inside OpenPR, before it returns
+	openErr error                             // OpenPR's error; nil: ok
 	onEvent func(e Event)                     // called inside Notify
 	postErr func(in CheckIn) error            // PostCheck's result; nil: ok
 	rerun   func(in RerunIn) (Verdict, error) // nil: pass
@@ -87,6 +88,9 @@ func (f *fake) register(env *testsuite.TestWorkflowEnvironment) {
 		f.mu.Unlock()
 		if open != nil {
 			open()
+		}
+		if f.openErr != nil {
+			return "", f.openErr
 		}
 		return "pr://" + in.Branch, nil
 	})
@@ -182,6 +186,17 @@ func TestRefusedSuccessCheckStopsBeforeOpenPR(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("events %v; want a failed event for the refused check", f.events)
+	}
+}
+
+func TestBranchMovedAtOpenPRTellsTheAuthor(t *testing.T) {
+	// The branch moved without a tardis request, so no new head is coming.
+	f := &fake{gates: []string{"simplify"}, openErr: temporal.NewNonRetryableApplicationError("moved", "BranchMoved", nil)}
+	env := newEnv(t, f)
+	env.RegisterDelayedCallback(func() { env.CancelWorkflow() }, time.Hour) // it waits for a new head
+	env.ExecuteWorkflow(Ship, in)
+	if !contains(f.events, "open-pr failed: the branch moved past the reviewed head; run tardis request on the new head") {
+		t.Errorf("events %v; want the author told the branch moved", f.events)
 	}
 }
 
