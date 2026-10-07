@@ -123,6 +123,9 @@ func Load(root string) (*Manifest, error) {
 				if _, err := r.Lstat(filepath.FromSlash(q + "/.git")); err == nil {
 					return nil, fmt.Errorf("%s is a submodule; not supported", q)
 				}
+			} else if q == p && !fi.Mode().IsRegular() {
+				// A FIFO would block the open; git can't commit one anyway.
+				return nil, fmt.Errorf("%s is not a regular file", q)
 			}
 		}
 		f, err := r.Open(filepath.FromSlash(p))
@@ -158,6 +161,12 @@ var ErrBehind = errors.New("does not contain the base")
 // the policy a merge would leave is head's own, which must load: a base that
 // cannot load its policy can't resolve anything again.
 func CheckHead(repo, baseID, headID string) error {
+	// A shallow clone hides history, so "not an ancestor" would be a guess.
+	if out, err := gitOut(repo, "rev-parse", "--is-shallow-repository"); err != nil {
+		return err
+	} else if strings.TrimSpace(out) == "true" {
+		return &GitError{"shallow clone: run git fetch --unshallow first"}
+	}
 	cmd := exec.Command("git", "--no-replace-objects", "-C", repo, "merge-base", "--is-ancestor", baseID, headID)
 	cmd.Env = chain.GitEnv()
 	var stderr bytes.Buffer
@@ -330,6 +339,9 @@ func local(p string) (string, error) {
 	if p == "" || path.IsAbs(c) || c == ".." || strings.HasPrefix(c, "../") || strings.Contains(c, ":") {
 		return "", fmt.Errorf("%q must be a relative path inside the repository", p)
 	}
+	if slices.Contains(strings.Split(c, "/"), ".git") { // git can't commit one
+		return "", fmt.Errorf("%q is inside a .git directory", p)
+	}
 	if strings.Count(c, "/") >= maxDepth {
 		return "", fmt.Errorf("%q is more than %d directories deep", p, maxDepth)
 	}
@@ -386,6 +398,8 @@ func loadGate(read readFunc, ref GateRef) (Gate, error) {
 	}
 	if len(g.Run) == 0 || g.Run[0] == "" {
 		errs = append(errs, errors.New("run is empty"))
+	} else if slices.ContainsFunc(g.Run, func(a string) bool { return strings.ContainsRune(a, 0) }) {
+		errs = append(errs, errors.New("run has a NUL byte, which no command line can carry"))
 	}
 	if g.Timeout <= 0 {
 		errs = append(errs, errors.New("timeout must be a positive duration such as 15m"))

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -222,6 +223,30 @@ func TestManifestLintCannotLook(t *testing.T) {
 	for _, repo := range []string{filepath.Join(t.TempDir(), "gone"), file} {
 		if code, _, stderr := runCLI("manifest", "lint", "--repo", repo); code != 2 {
 			t.Errorf("lint on %s: exit %d err %q, want 2", repo, code, stderr)
+		}
+	}
+}
+
+type brokenWriter struct{}
+
+func (brokenWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
+
+func TestManifestOutputThatCannotBeWritten(t *testing.T) {
+	dir, git := gitRepo(t)
+	git("checkout", "-q", "main")
+	cfg := filepath.Join(dir, ".tardis", "config.yml")
+	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, []byte("gates:\n  - name: simplify\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "-A")
+	git("commit", "-q", "-m", "enrol")
+	for _, args := range [][]string{{"manifest", "lint", "--repo", dir}, {"manifest", "resolve", "main", "main", "--repo", dir}} {
+		var stderr strings.Builder
+		if code := run(args, brokenWriter{}, &stderr); code != 2 {
+			t.Errorf("%v to a full disk: exit %d err %q, want 2", args, code, stderr.String())
 		}
 	}
 }

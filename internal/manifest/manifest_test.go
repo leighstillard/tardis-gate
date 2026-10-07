@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/leighstillard/tardis-gate/internal/chain"
@@ -443,6 +444,35 @@ func TestReservedGateNamesAndBackslashes(t *testing.T) {
 	} {
 		root := copySample(t, map[string]string{".tardis/config.yml": cfg})
 		wantErr(t, root, want)
+	}
+}
+
+func TestPolicyLintCanTrust(t *testing.T) {
+	// Paths git cannot commit, and argv no process can take, never pass lint.
+	for cfg, want := range map[string]string{
+		"gates:\n  - name: lint\n    dir: .git/tardis\n": `".git/tardis" is inside a .git directory`,
+		"gates:\n  - name: lint\n    dir: tools/lint\n":  "run has a NUL byte",
+	} {
+		root := copySample(t, map[string]string{".tardis/config.yml": cfg, "tools/lint/gate.yml": "name: lint\nrun: [\"true\", \"x\\0y\"]\ntimeout: 1m\n"})
+		wantErr(t, root, want)
+	}
+	// A FIFO for the runbook would block the open.
+	root := copySample(t, map[string]string{"docs/RUNBOOK.md": ""}) // "" deletes it
+	if err := syscall.Mkfifo(filepath.Join(root, "docs", "RUNBOOK.md"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantErr(t, root, "docs/RUNBOOK.md is not a regular file")
+}
+
+func TestCheckHeadRefusesAShallowClone(t *testing.T) {
+	root := committedSample(t, nil)
+	clone := t.TempDir()
+	if out, err := exec.Command("git", "clone", "-q", "--depth=1", "file://"+root, clone).CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	id, _ := CommitID(clone, "HEAD")
+	if err := CheckHead(clone, id, id); err == nil || !strings.Contains(err.Error(), "shallow") {
+		t.Errorf("CheckHead in a shallow clone: err = %v", err)
 	}
 }
 

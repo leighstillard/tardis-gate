@@ -216,7 +216,10 @@ func manifestLint(args []string, stdout, stderr io.Writer) int {
 	for i, g := range m.Gates {
 		names[i] = g.Name
 	}
-	fmt.Fprintf(stdout, "ok: %d gates in order: %s\n", len(names), strings.Join(names, ", "))
+	if _, err := fmt.Fprintf(stdout, "ok: %d gates in order: %s\n", len(names), strings.Join(names, ", ")); err != nil {
+		fmt.Fprintln(stderr, "manifest lint:", err)
+		return 2
+	}
 	return 0
 }
 
@@ -233,7 +236,10 @@ func manifestResolve(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	out, _ := json.Marshal(resolved{Base: ids[0], Head: ids[1], Gates: names}) // always marshals
-	fmt.Fprintln(stdout, string(out))
+	if _, err := fmt.Fprintln(stdout, string(out)); err != nil {
+		fmt.Fprintln(stderr, "manifest resolve:", err)
+		return 2
+	}
 	return 0
 }
 
