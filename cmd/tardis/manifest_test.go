@@ -184,6 +184,12 @@ func TestResolveChecksThePolicyAfterTheMerge(t *testing.T) {
 	}
 }
 
+func TestManifestLintCannotLook(t *testing.T) {
+	if code, _, stderr := runCLI("manifest", "lint", "--repo", filepath.Join(t.TempDir(), "gone")); code != 2 {
+		t.Errorf("lint on a missing directory: exit %d err %q, want 2", code, stderr)
+	}
+}
+
 func TestUnmovedCatchesAMovedHead(t *testing.T) {
 	dir, git := gitRepo(t)
 	pinned := [2]string{git("rev-parse", "main"), git("rev-parse", "HEAD")}

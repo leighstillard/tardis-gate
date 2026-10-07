@@ -289,6 +289,12 @@ func load(read readFunc) (*Manifest, error) {
 			errs = append(errs, fmt.Errorf("gates: %w", err))
 			continue
 		}
+		// . and .. would leave .tardis/gates/<name>; { and [ start JSON, which
+		// chain verify --gates reads as resolve output.
+		if ref.Name == "." || ref.Name == ".." || strings.IndexAny(ref.Name, "{[") == 0 {
+			errs = append(errs, fmt.Errorf("gates: gate name %q is reserved", ref.Name))
+			continue
+		}
 		if seen[ref.Name] {
 			errs = append(errs, fmt.Errorf("gates: duplicate gate %q", ref.Name))
 			continue
@@ -331,7 +337,10 @@ func load(read readFunc) (*Manifest, error) {
 // local cleans a repository-relative path and refuses one that could leave
 // the repository, or is too deep to look up cheaply.
 func local(p string) (string, error) {
-	c := path.Clean(filepath.ToSlash(p))
+	if strings.Contains(p, "\\") { // committed text is read on Linux, where \ is a name
+		return "", fmt.Errorf("%q: separate directories with /", p)
+	}
+	c := path.Clean(p)
 	if !filepath.IsLocal(filepath.FromSlash(c)) {
 		return "", fmt.Errorf("%q must be a relative path inside the repository", p)
 	}

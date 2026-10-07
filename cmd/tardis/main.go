@@ -198,6 +198,10 @@ func manifestLint(args []string, stdout, stderr io.Writer) int {
 	if _, code, ok := parse(fs, "manifest lint", args, 0, stderr); !ok {
 		return code
 	}
+	if _, err := os.Stat(*repo); err != nil { // can't look, which is not a bad manifest
+		fmt.Fprintln(stderr, "manifest lint:", err)
+		return 2
+	}
 	m, err := manifest.Load(*repo)
 	if err != nil {
 		for _, line := range strings.Split(err.Error(), "\n") {

@@ -126,6 +126,7 @@ func TestGateValidation(t *testing.T) {
 	for name, tc := range map[string]struct{ yml, want string }{
 		"empty run":    {"name: lint\nrun: []\ntimeout: 1m\n", "run is empty"},
 		"no timeout":   {"name: lint\nrun: [make, lint]\n", "timeout must be a positive duration"},
+		"bare number":  {"name: lint\nrun: [make]\ntimeout: 15\n", "cannot unmarshal !!int `15` into time.Duration"},
 		"bad timeout":  {"name: lint\nrun: [make]\ntimeout: soon\n", "line 3: cannot unmarshal !!str `soon` into time.Duration"},
 		"name differs": {"name: other\nrun: [make]\ntimeout: 1m\n", `name is "other", want "lint"`},
 		"bad differ":   {"name: lint\nrun: [make]\ntimeout: 1m\nmust_differ_from: me\n", "must_differ_from"},
@@ -425,6 +426,17 @@ func TestGateCountIsCapped(t *testing.T) {
 func TestConfiguredPathsAreShallow(t *testing.T) {
 	root := copySample(t, map[string]string{".tardis/config.yml": "gates:\n  - name: lint\n    dir: a/b/c/d/e/f/g/h/i\n"})
 	wantErr(t, root, `gate "lint": dir: "a/b/c/d/e/f/g/h/i" is more than 8 directories deep`)
+}
+
+func TestReservedGateNamesAndBackslashes(t *testing.T) {
+	for cfg, want := range map[string]string{
+		"gates:\n  - name: ..\n":                         `gate name ".." is reserved`,
+		"gates:\n  - name: '{security}'\n":               `gate name "{security}" is reserved`,
+		"gates:\n  - name: lint\n    dir: tools\\lint\n": `"tools\\lint": separate directories with /`,
+	} {
+		root := copySample(t, map[string]string{".tardis/config.yml": cfg})
+		wantErr(t, root, want)
+	}
 }
 
 func TestGateDirMustBeBelowTheRoot(t *testing.T) {
