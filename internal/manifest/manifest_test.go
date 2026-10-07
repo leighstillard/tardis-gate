@@ -76,6 +76,9 @@ func TestLoadSample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if m.BaseBranch != "main" {
+		t.Errorf("default base branch = %q, want main", m.BaseBranch)
+	}
 	if got, want := names(m.Gates), []string{"simplify", "verify", "design", "review"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("gates = %v, want %v", got, want)
 	}

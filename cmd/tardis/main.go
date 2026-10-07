@@ -21,6 +21,9 @@ const usage = `usage:
   tardis chain verify <base> <head> (--gates <a,b,c> | --manifest) [--repo <dir>]
   tardis manifest lint [--repo <dir>]
   tardis manifest resolve <base> <head> [--repo <dir>]
+  tardis request [<sha>] --tool <vendor/tool/model> [--repo <dir>] [--remote <name>]
+  tardis wait [--repo <dir>] [--remote <name>]
+  tardis runner [--work-dir <dir>] [--rerun-cmd <sh>]
   tardis version
 `
 
@@ -38,6 +41,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return manifestLint(args[2:], stdout, stderr)
 	case cmd == "manifest resolve":
 		return manifestResolve(args[2:], stdout, stderr)
+	case len(args) > 0 && args[0] == "request":
+		return request(args[1:], stdout, stderr)
+	case len(args) > 0 && args[0] == "wait":
+		return wait(args[1:], stdout, stderr)
+	case len(args) > 0 && args[0] == "runner":
+		return runner(args[1:], stdout, stderr)
 	case len(args) == 1 && args[0] == "version":
 		fmt.Fprintln(stdout, version())
 		return 0

@@ -34,6 +34,7 @@ var ErrNotEnrolled = errors.New("not enrolled: " + ConfigPath + " not found")
 
 // Config is .tardis/config.yml.
 type Config struct {
+	BaseBranch    string    `yaml:"base_branch"` // default "main"
 	Gates         []GateRef `yaml:"gates"`
 	VerifyRunbook string    `yaml:"verify_runbook"`
 }
@@ -60,6 +61,7 @@ type Gate struct {
 
 // Manifest is the enabled gates of a repository, in order.
 type Manifest struct {
+	BaseBranch    string
 	VerifyRunbook string // repository-relative path; "" if unset
 	Gates         []Gate
 }
@@ -283,7 +285,10 @@ func load(read readFunc) (*Manifest, error) {
 	if len(cfg.Gates) > maxGates {
 		return nil, fmt.Errorf("gates: %d listed; at most %d", len(cfg.Gates), maxGates)
 	}
-	m := &Manifest{}
+	m := &Manifest{BaseBranch: cfg.BaseBranch}
+	if m.BaseBranch == "" {
+		m.BaseBranch = "main"
+	}
 	var errs []error
 	seen := map[string]bool{}
 	verifyEnabled := false

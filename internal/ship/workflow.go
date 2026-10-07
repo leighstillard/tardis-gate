@@ -1,0 +1,220 @@
+package ship
+
+import (
+	"errors"
+	"time"
+
+	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/workflow"
+)
+
+// Timeouts. A dead runner shows within HeartbeatTimeout while an activity
+// runs, or ScheduleToStart when no runner is polling at all.
+const (
+	HeartbeatTimeout = 45 * time.Second
+	ScheduleToStart  = 2 * time.Minute
+	MaxGateTime      = 20 * time.Minute
+	ScheduleToClose  = 60 * time.Minute
+	AwaitDelivery    = 24 * time.Hour // notifications and check runs wait this long for a worker
+	AwaitFix         = 7 * 24 * time.Hour
+)
+
+var retry = &temporal.RetryPolicy{
+	InitialInterval:        10 * time.Second,
+	BackoffCoefficient:     2,
+	MaximumInterval:        2 * time.Minute,
+	MaximumAttempts:        3,
+	NonRetryableErrorTypes: []string{"Rejected", "Malformed"},
+}
+
+func runnerOpts(ctx workflow.Context, timeout time.Duration) workflow.Context {
+	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		TaskQueue:              RunnerQueue,
+		ScheduleToStartTimeout: ScheduleToStart,
+		StartToCloseTimeout:    min(timeout, MaxGateTime),
+		ScheduleToCloseTimeout: ScheduleToClose,
+		HeartbeatTimeout:       HeartbeatTimeout,
+		RetryPolicy:            retry,
+	})
+}
+
+func authorOpts(ctx workflow.Context, queue string, timeout time.Duration) workflow.Context {
+	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		TaskQueue:              queue,
+		StartToCloseTimeout:    min(timeout, MaxGateTime),
+		ScheduleToCloseTimeout: AwaitDelivery, // the author may attach later
+		HeartbeatTimeout:       HeartbeatTimeout,
+		RetryPolicy:            retry,
+	})
+}
+
+func deliveryOpts(ctx workflow.Context, queue string) workflow.Context {
+	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		TaskQueue:              queue,
+		StartToCloseTimeout:    time.Minute,
+		ScheduleToCloseTimeout: AwaitDelivery,
+		HeartbeatTimeout:       HeartbeatTimeout,
+	})
+}
+
+// outcome is how one pass over the gates ended.
+type outcome struct {
+	Tip      string // branch tip after the last check commit
+	Gate     string // gate that stopped the pass, "" if all passed
+	Kind     string // "rejected" or "failed"
+	Reason   string
+	Canceled bool
+}
+
+// Ship drives one branch through its gates. It restarts from the first gate
+// whenever a new head arrives, and opens the PR once every gate passes.
+func Ship(ctx workflow.Context, in Input) (string, error) {
+	head := in.Head
+	if err := workflow.SetQueryHandler(ctx, QueryHead, func() (string, error) { return head, nil }); err != nil {
+		return "", err
+	}
+	heads := workflow.GetSignalChannel(ctx, SignalNewHead)
+	authorQ := AuthorQueue(workflow.GetInfo(ctx).WorkflowExecution.ID)
+
+	for {
+		head = latest(heads, head)
+		notify(ctx, authorQ, Event{Kind: "started", SHA: head})
+
+		passCtx, cancel := workflow.WithCancel(ctx)
+		done := workflow.NewBufferedChannel(ctx, 1)
+		workflow.Go(passCtx, func(gctx workflow.Context) {
+			done.Send(gctx, runGates(gctx, in, head, authorQ))
+		})
+		var res outcome
+		var sig NewHead
+		signalled := false
+		sel := workflow.NewSelector(ctx)
+		sel.AddReceive(done, func(c workflow.ReceiveChannel, _ bool) { c.Receive(ctx, &res) })
+		sel.AddReceive(heads, func(c workflow.ReceiveChannel, _ bool) { c.Receive(ctx, &sig); signalled = true })
+		sel.Select(ctx)
+		cancel()
+		if signalled {
+			done.Receive(ctx, &res) // let the cancelled pass unwind
+			head = sig.SHA
+			continue
+		}
+
+		if res.Gate == "" {
+			var url string
+			err := workflow.ExecuteActivity(runnerOpts(ctx, 5*time.Minute), ActOpenPR,
+				OpenPRIn{RepoURL: in.RepoURL, Branch: in.Branch, Base: in.Base, Head: res.Tip}).Get(ctx, &url)
+			if err != nil {
+				notify(ctx, authorQ, Event{Kind: "failed", Gate: "open-pr", SHA: res.Tip, Detail: reason(err)})
+				return "", err
+			}
+			notify(ctx, authorQ, Event{Kind: "pr-created", SHA: res.Tip, Detail: url})
+			notify(ctx, authorQ, Event{Kind: "completed", SHA: res.Tip})
+			return url, nil
+		}
+
+		// Rejected or failed: wait for the author to push a fix and ask again.
+		timedOut := false
+		wait := workflow.NewSelector(ctx)
+		wait.AddReceive(heads, func(c workflow.ReceiveChannel, _ bool) { c.Receive(ctx, &sig) })
+		wait.AddFuture(workflow.NewTimer(ctx, AwaitFix), func(workflow.Future) { timedOut = true })
+		wait.Select(ctx)
+		if timedOut {
+			return "", temporal.NewApplicationError("no new head within "+AwaitFix.String(), "Abandoned")
+		}
+		head = sig.SHA
+	}
+}
+
+// runGates makes one pass over the gates for head. It never returns an error:
+// every way a pass can stop is an outcome the author is told about.
+func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
+	stop := func(gate, kind, why, tip string) outcome {
+		if ctx.Err() != nil {
+			return outcome{Canceled: true}
+		}
+		notify(ctx, authorQ, Event{Kind: kind, Gate: gate, SHA: tip, Detail: why})
+		postCheck(ctx, in, tip, gate, "failure", why)
+		return outcome{Gate: gate, Kind: kind, Reason: why, Tip: tip}
+	}
+
+	var gates []GateInfo
+	if err := workflow.ExecuteActivity(runnerOpts(ctx, 5*time.Minute), ActResolve,
+		ResolveIn{RepoURL: in.RepoURL, Base: in.Base, SHA: head}).Get(ctx, &gates); err != nil {
+		return stop("resolve", "failed", reason(err), head)
+	}
+
+	tip := head
+	var names []string
+	for _, g := range gates {
+		names = append(names, g.Name)
+		if err := workflow.ExecuteActivity(authorOpts(ctx, authorQ, g.Timeout), ActAuthorReview,
+			AuthorReviewIn{Gate: g.Name, Base: in.Base, Code: head, Tip: tip}).Get(ctx, &tip); err != nil {
+			return stop(g.Name, "failed", "author review: "+reason(err), tip)
+		}
+		var st map[string]string
+		if err := workflow.ExecuteActivity(runnerOpts(ctx, 5*time.Minute), ActAttest,
+			AttestIn{RepoURL: in.RepoURL, Base: in.Base, Tip: tip, Gates: []string{g.Name}}).Get(ctx, &st); err != nil {
+			return stop(g.Name, "failed", reason(err), tip)
+		}
+		if st[g.Name] != "valid" {
+			return stop(g.Name, "rejected", "check commit "+st[g.Name], tip)
+		}
+		var v Verdict
+		if err := workflow.ExecuteActivity(runnerOpts(ctx, g.Timeout), ActRerun,
+			RerunIn{RepoURL: in.RepoURL, Base: in.Base, Tip: tip, Gate: g.Name}).Get(ctx, &v); err != nil {
+			return stop(g.Name, "failed", reason(err), tip)
+		}
+		if !v.Pass {
+			return stop(g.Name, "rejected", v.Reason, tip)
+		}
+		postCheck(ctx, in, tip, g.Name, "success", "")
+		notify(ctx, authorQ, Event{Kind: "passed", Gate: g.Name, SHA: tip})
+	}
+
+	// Every check must still hold on the final tip before a PR is opened.
+	var st map[string]string
+	if err := workflow.ExecuteActivity(runnerOpts(ctx, 5*time.Minute), ActAttest,
+		AttestIn{RepoURL: in.RepoURL, Base: in.Base, Tip: tip, Gates: names}).Get(ctx, &st); err != nil {
+		return stop("chain", "failed", reason(err), tip)
+	}
+	for _, n := range names {
+		if st[n] != "valid" {
+			return stop(n, "rejected", "check commit "+st[n]+" on the final tip", tip)
+		}
+	}
+	return outcome{Tip: tip}
+}
+
+// reason turns an activity error into words for the author. A timeout means
+// the worker that should have answered is gone.
+func reason(err error) string {
+	var te *temporal.TimeoutError
+	if errors.As(err, &te) {
+		return "runner died"
+	}
+	var ae *temporal.ApplicationError
+	if errors.As(err, &ae) {
+		return ae.Error()
+	}
+	return err.Error()
+}
+
+// notify tells the author; delivery problems never stop the run.
+func notify(ctx workflow.Context, authorQ string, e Event) {
+	_ = workflow.ExecuteActivity(deliveryOpts(ctx, authorQ), ActNotify, e).Get(ctx, nil)
+}
+
+// postCheck records a tardis/<gate> check run; it waits for a runner if none is up.
+func postCheck(ctx workflow.Context, in Input, sha, gate, conclusion, summary string) {
+	_ = workflow.ExecuteActivity(deliveryOpts(ctx, RunnerQueue), ActPostCheck,
+		CheckIn{RepoURL: in.RepoURL, SHA: sha, Name: "tardis/" + gate, Conclusion: conclusion, Summary: summary}).Get(ctx, nil)
+}
+
+// latest drains queued new-head signals and returns the newest head.
+func latest(ch workflow.ReceiveChannel, head string) string {
+	var sig NewHead
+	for ch.ReceiveAsync(&sig) {
+		head = sig.SHA
+	}
+	return head
+}
