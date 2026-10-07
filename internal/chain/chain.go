@@ -222,6 +222,25 @@ func isEmpty(dir string, c commit, trees map[string]string) (bool, error) {
 	return pt == c.tree, nil
 }
 
+// CheckCommit returns the commit Verify judges for gate on head: the newest
+// check attempt for it in merge-base(base, head)..head, or "" if there is none.
+func CheckCommit(dir, base, head, gate string) (string, error) {
+	mb, err := git(dir, "merge-base", base, head)
+	if err != nil {
+		return "", err
+	}
+	commits, err := history(dir, "--topo-order", mb+".."+head)
+	if err != nil {
+		return "", err
+	}
+	for _, c := range commits {
+		if g, ok := c.checkGate(); ok && g == gate {
+			return c.sha, nil
+		}
+	}
+	return "", nil
+}
+
 // history lists commits for a `git log` range. Structure (commit, tree,
 // parents) comes from output that holds only object IDs, one commit per line.
 // Subjects come from a second, NUL-separated listing that must match the first

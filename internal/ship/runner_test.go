@@ -1,0 +1,321 @@
+package ship
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"go.temporal.io/sdk/temporal"
+
+	"github.com/leighstillard/tardis-gate/internal/chain"
+	"github.com/leighstillard/tardis-gate/internal/executor"
+)
+
+// runnerFixture is authorRepo's origin with a valid simplify check on top of
+// the feature branch. It returns
+// the runner, the origin URL, main's commit and the check commit.
+func runnerFixture(t *testing.T) (*Runner, string, string, string) {
+	t.Helper()
+	a, git := authorRepo(t)
+	check, err := chain.Commit(a.Dir, "simplify", "ok", a.Tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	git("push", "-q", "origin", "feature")
+	url := git("remote", "get-url", "origin")
+	r := &Runner{Repos: map[string]bool{url: true}, WorkDir: t.TempDir(), RerunCmd: []string{"true"}, Exec: executor.Local{}, Log: io.Discard}
+	return r, url, git("rev-parse", "main"), check
+}
+
+func TestRunnerPostsSuccessOnlyForItsOwnPass(t *testing.T) {
+	r, url, base, check := runnerFixture(t)
+	ctx := context.Background()
+	success := CheckIn{RepoURL: url, Base: "main", BaseID: base, SHA: check, Gate: "simplify", Conclusion: "success"}
+
+	// A workflow asking for a success the runner never re-ran is refused.
+	if err := r.PostCheck(ctx, success); err == nil || !strings.Contains(err.Error(), "refusing") {
+		t.Fatalf("success without a re-run: err = %v, want refusal", err)
+	}
+	v, err := r.Rerun(ctx, RerunIn{RepoURL: url, Base: "main", BaseID: base, Tip: check, Gate: "simplify"})
+	if err != nil || !v.Pass {
+		t.Fatalf("rerun: %+v, %v", v, err)
+	}
+	if err := r.PostCheck(ctx, success); err != nil {
+		t.Errorf("success after a passing re-run: %v", err)
+	}
+	// A restarted runner still knows what it passed.
+	restarted := &Runner{Repos: r.Repos, WorkDir: r.WorkDir, RerunCmd: r.RerunCmd, Exec: r.Exec, Log: io.Discard}
+	if err := restarted.PostCheck(ctx, success); err != nil {
+		t.Errorf("success after a restart: %v", err)
+	}
+	// Failures are posted as asked: they can only block.
+	if err := r.PostCheck(ctx, CheckIn{RepoURL: url, SHA: check, Gate: "verify", Conclusion: "failure"}); err != nil {
+		t.Errorf("failure: %v", err)
+	}
+}
+
+func TestRunnerPassIsBoundToItsBaseAndClaim(t *testing.T) {
+	r, url, _, check := runnerFixture(t)
+	ctx := context.Background()
+	w := t.TempDir()
+	g := func(args ...string) string {
+		return strings.TrimSpace(run(t, "git", append([]string{"-C", w}, args...)...))
+	}
+	g("clone", "-q", url, ".")
+	g("config", "user.name", "t")
+	g("config", "user.email", "t@example.com")
+	// main moves on twice and the branch does not, so both base commits have
+	// the same merge base with it.
+	g("checkout", "-q", "main")
+	g("commit", "-q", "--allow-empty", "-m", "m1")
+	m1 := g("rev-parse", "HEAD")
+	g("commit", "-q", "--allow-empty", "-m", "m2")
+	m2 := g("rev-parse", "HEAD")
+	g("push", "-q", "origin", "main")
+	success := func(baseID, sha string) error {
+		return r.PostCheck(ctx, CheckIn{RepoURL: url, Base: "main", BaseID: baseID, SHA: sha, Gate: "simplify", Conclusion: "success"})
+	}
+
+	if v, err := r.Rerun(ctx, RerunIn{RepoURL: url, Base: "main", BaseID: m1, Tip: check, Gate: "simplify"}); err != nil || !v.Pass {
+		t.Fatalf("rerun on m1: %+v, %v", v, err)
+	}
+	if err := success(m2, check); err == nil {
+		t.Error("a pass on base m1 authorised a success on base m2")
+	}
+	if err := success(m1, check); err != nil {
+		t.Errorf("success on the base the gate passed on: %v", err)
+	}
+
+	// The same code under a rewritten claim was never re-run.
+	g("checkout", "-q", "feature")
+	g("reset", "-q", "--hard", check+"^")
+	rewritten, err := chain.Commit(w, "simplify", "a different claim", "anthropic/claude-code/test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g("push", "-q", "--force", "origin", "feature")
+	if g("rev-parse", rewritten+"^{tree}") != g("rev-parse", check+"^{tree}") {
+		t.Fatal("rewritten check changed the tree")
+	}
+	if err := success(m1, rewritten); err == nil {
+		t.Error("a pass for one check commit authorised a success for a rewritten one")
+	}
+}
+
+func TestRunnerFollowsTheDefaultBranch(t *testing.T) {
+	r, url, _, check := runnerFixture(t)
+	ctx := context.Background()
+	if out, err := r.Resolve(ctx, ResolveIn{RepoURL: url, SHA: check}); err != nil || out.Base != "main" {
+		t.Fatalf("resolve: %+v, %v", out, err)
+	}
+	// The default branch moves to trunk, whose manifest names itself the
+	// base; main stays behind with its old policy.
+	w := t.TempDir()
+	g := func(args ...string) string {
+		return strings.TrimSpace(run(t, "git", append([]string{"-C", w}, args...)...))
+	}
+	g("clone", "-q", url, ".")
+	g("config", "user.name", "t")
+	g("config", "user.email", "t@example.com")
+	g("checkout", "-q", "-b", "trunk", "origin/main")
+	if err := os.WriteFile(filepath.Join(w, ".tardis", "config.yml"), []byte("base_branch: trunk\ngates:\n  - name: simplify\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g("commit", "-q", "-am", "trunk is the base")
+	g("push", "-q", "origin", "trunk")
+	run(t, "git", "--git-dir="+strings.TrimPrefix(url, "file://"), "symbolic-ref", "HEAD", "refs/heads/trunk")
+	// The head was cut from main, so the runner, now reading trunk's
+	// policy, wants it rebased onto trunk.
+	if _, err := r.Resolve(ctx, ResolveIn{RepoURL: url, SHA: check}); err == nil || !strings.Contains(err.Error(), "rebase onto trunk") {
+		t.Errorf("resolve after the default branch moved: %v; want trunk as the base", err)
+	}
+}
+
+func TestOpenPRRefusesAMovedBase(t *testing.T) {
+	r, url, base, check := runnerFixture(t)
+	ctx := context.Background()
+	open := func(baseID string) error {
+		_, err := r.OpenPR(ctx, OpenPRIn{RepoURL: url, Branch: "feature", Base: "main", BaseID: baseID, Head: check})
+		return err
+	}
+	var ae *temporal.ApplicationError
+	if err := open(base); !errors.As(err, &ae) || ae.Type() != "Rejected" {
+		t.Errorf("open before any re-run: err = %v; want Rejected", err)
+	}
+	if v, err := r.Rerun(ctx, RerunIn{RepoURL: url, Base: "main", BaseID: base, Tip: check, Gate: "simplify"}); err != nil || !v.Pass {
+		t.Fatalf("rerun: %+v, %v", v, err)
+	}
+	if err := open(base); err != nil {
+		t.Fatalf("open on the resolved base after a pass: %v", err)
+	}
+	w := t.TempDir()
+	run(t, "git", "-C", w, "clone", "-q", url, ".")
+	run(t, "git", "-C", w, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "main moves")
+	run(t, "git", "-C", w, "push", "-q", "origin", "main")
+	if err := open(base); !errors.As(err, &ae) || ae.Type() != "BaseMoved" {
+		t.Errorf("open after main moved: err = %v; want BaseMoved", err)
+	}
+	// A pass earned on the old base opens nothing on the new one.
+	now := strings.TrimSpace(run(t, "git", "-C", w, "rev-parse", "HEAD"))
+	if err := open(now); err == nil {
+		t.Error("a pass on the old base opened a PR on the new one")
+	}
+}
+
+func TestRunnerRefusesAHeadThatWouldStrandTheBase(t *testing.T) {
+	r, url, _, _ := runnerFixture(t)
+	w := t.TempDir()
+	g := func(args ...string) string {
+		return strings.TrimSpace(run(t, "git", append([]string{"-C", w, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...))
+	}
+	g("clone", "-q", url, ".")
+	g("checkout", "-q", "feature")
+	g("rm", "-q", ".tardis/config.yml")
+	g("commit", "-q", "-m", "unenrol")
+	g("push", "-q", "origin", "feature")
+	if _, err := r.Resolve(context.Background(), ResolveIn{RepoURL: url, SHA: g("rev-parse", "HEAD")}); err == nil || !strings.Contains(err.Error(), "not enrolled") {
+		t.Errorf("resolve on a head that removes the config: err = %v", err)
+	}
+}
+
+func TestRunnerRefusesAMergedSideCommitAsBase(t *testing.T) {
+	// Reachable from main through a merge, but main never pointed at it.
+	r, url, _, check := runnerFixture(t)
+	w := t.TempDir()
+	g := func(args ...string) string {
+		return strings.TrimSpace(run(t, "git", append([]string{"-C", w, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...))
+	}
+	g("clone", "-q", url, ".")
+	g("checkout", "-q", "-b", "side", "origin/main")
+	g("commit", "-q", "--allow-empty", "-m", "side")
+	side := g("rev-parse", "HEAD")
+	g("checkout", "-q", "main")
+	g("merge", "-q", "--no-ff", "-m", "merge side", "side")
+	g("push", "-q", "origin", "main")
+	if _, err := r.Rerun(context.Background(), RerunIn{RepoURL: url, Base: "main", BaseID: side, Tip: check, Gate: "simplify"}); err == nil || !strings.Contains(err.Error(), "was never main itself") {
+		t.Errorf("rerun with a merged side commit as base: err = %v", err)
+	}
+}
+
+func TestRunnerIgnoresATagNamedLikeTheBase(t *testing.T) {
+	// A tag called origin/main would win over the remote-tracking branch if
+	// the runner named refs in short.
+	r, url, base, check := runnerFixture(t)
+	run(t, "git", "--git-dir="+strings.TrimPrefix(url, "file://"), "tag", "origin/main", check)
+	run(t, "git", "--git-dir="+strings.TrimPrefix(url, "file://"), "tag", "origin/HEAD", check)
+	out, err := r.Resolve(context.Background(), ResolveIn{RepoURL: url, SHA: check})
+	if err != nil || out.BaseID != base {
+		t.Errorf("resolve with tags named origin/main and origin/HEAD: %+v, %v; want base %.7s", out, err, base)
+	}
+}
+
+func TestAPassFromAReplacedReviewerCountsForNothing(t *testing.T) {
+	r, url, base, check := runnerFixture(t)
+	ctx := context.Background()
+	if v, err := r.Rerun(ctx, RerunIn{RepoURL: url, Base: "main", BaseID: base, Tip: check, Gate: "simplify"}); err != nil || !v.Pass {
+		t.Fatalf("rerun: %+v, %v", v, err)
+	}
+	r.RerunCmd = []string{"sh", "-c", "exit 0", "new reviewer"}
+	if err := r.PostCheck(ctx, CheckIn{RepoURL: url, Base: "main", BaseID: base, SHA: check, Gate: "simplify", Conclusion: "success"}); err == nil {
+		t.Error("a pass from the old reviewer authorised a success under the new one")
+	}
+}
+
+func TestRerunIsNotRepeatedOnceRecorded(t *testing.T) {
+	r, url, base, check := runnerFixture(t)
+	ctx := context.Background()
+	// Passes the first time; rejects if it ever runs again.
+	marker := filepath.Join(t.TempDir(), "ran")
+	r.RerunCmd = []string{"sh", "-c", "test ! -e " + marker + " && touch " + marker}
+	in := RerunIn{RepoURL: url, Base: "main", BaseID: base, Tip: check, Gate: "simplify"}
+	if v, err := r.Rerun(ctx, in); err != nil || !v.Pass {
+		t.Fatalf("rerun: %+v, %v", v, err)
+	}
+	// The retry of an attempt whose completion was lost: the command, which
+	// would now reject, must not run.
+	if v, err := r.Rerun(ctx, in); err != nil || !v.Pass {
+		t.Errorf("retried rerun: %+v, %v; want the recorded pass", v, err)
+	}
+}
+
+func TestRunnerLockGivesUpWithItsContext(t *testing.T) {
+	r, url, _, _ := runnerFixture(t)
+	unlock, err := r.lock(context.Background(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := r.lock(ctx, url); err == nil {
+		t.Error("a second lock on a held repository did not give up with its context")
+	}
+}
+
+func TestRunnerRecoversFromAnInterruptedClone(t *testing.T) {
+	// A clone killed half way leaves a .git behind; the runner must not
+	// keep failing on it.
+	r, url, base, check := runnerFixture(t)
+	sum := sha256.Sum256([]byte(url))
+	if err := os.MkdirAll(filepath.Join(r.WorkDir, hex.EncodeToString(sum[:8]), ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := r.Resolve(context.Background(), ResolveIn{RepoURL: url, SHA: check}); err != nil || out.BaseID != base {
+		t.Errorf("resolve over a broken clone: %+v, %v", out, err)
+	}
+}
+
+func TestGitOutStopsWithItsContext(t *testing.T) {
+	// A helper git starts (ssh, a credential helper) that keeps the pipe
+	// open must not hold a cancelled call, or the repository lock.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err := gitOut(ctx, "", "-c", "alias.hang=!sh -c 'sleep 60 & sleep 60'", "hang")
+	if err == nil || time.Since(start) > 8*time.Second {
+		t.Errorf("gitOut returned %v after %v; want an error within a few seconds", err, time.Since(start))
+	}
+}
+
+func TestRunnerRefusesABaseItDidNotChoose(t *testing.T) {
+	r, url, base, check := runnerFixture(t)
+	ctx := context.Background()
+	// The base comes from the default branch's manifest, not the request.
+	if out, err := r.Resolve(ctx, ResolveIn{RepoURL: url, SHA: check}); err != nil || out.Base != "main" || out.BaseID != base {
+		t.Errorf("resolve: %+v, %v; want base main at %.7s", out, err, base)
+	}
+	if _, err := r.Rerun(ctx, RerunIn{RepoURL: url, Base: "feature", BaseID: check, Tip: check, Gate: "simplify"}); err == nil || !strings.Contains(err.Error(), "not this repository's base branch") {
+		t.Errorf("rerun against feature: err = %v", err)
+	}
+	// A base commit that main never held (here: the check itself).
+	if _, err := r.Rerun(ctx, RerunIn{RepoURL: url, Base: "main", BaseID: check, Tip: check, Gate: "simplify"}); err == nil || !strings.Contains(err.Error(), "was never main itself") {
+		t.Errorf("rerun with a foreign base commit: err = %v", err)
+	}
+}
+
+func TestRunnerRerunJudgesTheChainFirst(t *testing.T) {
+	r, url, base, check := runnerFixture(t)
+	// The code commit under the check has no check of its own for verify.
+	code := strings.TrimSpace(run(t, "git", "-C", r.WorkDir, "--git-dir="+filepath.Join(strings.TrimPrefix(url, "file://")), "rev-parse", check+"^"))
+	v, err := r.Rerun(context.Background(), RerunIn{RepoURL: url, Base: "main", BaseID: base, Tip: code, Gate: "simplify"})
+	if err != nil || v.Pass || !strings.Contains(v.Reason, "missing") {
+		t.Errorf("rerun on a tip without the check: %+v, %v; want a missing-check rejection", v, err)
+	}
+}
+
+func run(t *testing.T, name string, args ...string) string {
+	t.Helper()
+	out, err := exec.Command(name, args...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %v: %v\n%s", name, args, err, out)
+	}
+	return string(out)
+}

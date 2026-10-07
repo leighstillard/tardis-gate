@@ -21,6 +21,9 @@ const usage = `usage:
   tardis chain verify <base> <head> (--gates <a,b,c> | --manifest) [--repo <dir>]
   tardis manifest lint [--repo <dir>]
   tardis manifest resolve <base> <head> [--repo <dir>]
+  tardis request [<sha>] --tool <vendor/tool/model> [--repo <dir>] [--remote <name>]
+  tardis wait --tool <vendor/tool/model> [--repo <dir>] [--remote <name>]
+  tardis runner --repo <url>... [--work-dir <dir>] [--rerun-cmd <sh>]
   tardis version
 `
 
@@ -38,6 +41,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return manifestLint(args[2:], stdout, stderr)
 	case cmd == "manifest resolve":
 		return manifestResolve(args[2:], stdout, stderr)
+	case len(args) > 0 && args[0] == "request":
+		return request(args[1:], stdout, stderr)
+	case len(args) > 0 && args[0] == "wait":
+		return wait(args[1:], stdout, stderr)
+	case len(args) > 0 && args[0] == "runner":
+		return runner(args[1:], stdout, stderr)
+	case len(args) >= 1 && args[0] == "review":
+		// The reference gates run `tardis review <gate>`; the review itself
+		// arrives with the provider (build 4).
+		fmt.Fprintln(stderr, "tardis review: not available until the provider lands (build 4). Until then, review in your own"+
+			" session and record it with `tardis check commit`, or set the gate's run in .tardis/gates/<gate>/gate.yml")
+		return 2
 	case len(args) == 1 && args[0] == "version":
 		fmt.Fprintln(stdout, version())
 		return 0
@@ -53,6 +68,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 // `tardis chain verify --repo r main HEAD --gates a,b`. On failure it returns
 // the exit code: 0 for -h, 2 for a usage error.
 func parse(fs *flag.FlagSet, synopsis string, args []string, npos int, stderr io.Writer) ([]string, int, bool) {
+	return parseRange(fs, synopsis, args, npos, npos, stderr)
+}
+
+// parseRange is parse for between min and max positional arguments.
+func parseRange(fs *flag.FlagSet, synopsis string, args []string, min, max int, stderr io.Writer) ([]string, int, bool) {
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, "usage: tardis %s\n", synopsis)
@@ -71,8 +91,14 @@ func parse(fs *flag.FlagSet, synopsis string, args []string, npos int, stderr io
 		}
 		pos, args = append(pos, args[0]), args[1:]
 	}
-	if len(pos) != npos {
-		fmt.Fprintf(stderr, "%s: want %d argument(s), got %d\n", fs.Name(), npos, len(pos))
+	if len(pos) < min || len(pos) > max {
+		want := fmt.Sprint(min)
+		if min == 0 {
+			want = fmt.Sprintf("at most %d", max)
+		} else if max != min {
+			want = fmt.Sprintf("%d to %d", min, max)
+		}
+		fmt.Fprintf(stderr, "%s: want %s argument(s), got %d\n", fs.Name(), want, len(pos))
 		fs.Usage()
 		return nil, 2, false
 	}

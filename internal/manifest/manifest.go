@@ -34,6 +34,7 @@ var ErrNotEnrolled = errors.New("not enrolled: " + ConfigPath + " not found")
 
 // Config is .tardis/config.yml.
 type Config struct {
+	BaseBranch    string    `yaml:"base_branch"` // default "main"
 	Gates         []GateRef `yaml:"gates"`
 	VerifyRunbook string    `yaml:"verify_runbook"`
 }
@@ -60,9 +61,14 @@ type Gate struct {
 
 // Manifest is the enabled gates of a repository, in order.
 type Manifest struct {
+	BaseBranch    string
 	VerifyRunbook string // repository-relative path; "" if unset
 	Gates         []Gate
 }
+
+// branchName is the subset of git's branch names a base may have; the rest
+// of git's rules are checked alongside it.
+var branchName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._/-]*$`)
 
 // Limits on repository-controlled input.
 const (
@@ -283,8 +289,17 @@ func load(read readFunc) (*Manifest, error) {
 	if len(cfg.Gates) > maxGates {
 		return nil, fmt.Errorf("gates: %d listed; at most %d", len(cfg.Gates), maxGates)
 	}
-	m := &Manifest{}
+	m := &Manifest{BaseBranch: cfg.BaseBranch}
+	if m.BaseBranch == "" {
+		m.BaseBranch = "main"
+	}
 	var errs []error
+	if !branchName.MatchString(m.BaseBranch) || strings.Contains(m.BaseBranch, "..") || strings.HasSuffix(m.BaseBranch, ".") ||
+		slices.ContainsFunc(strings.Split(m.BaseBranch, "/"), func(c string) bool {
+			return c == "" || strings.HasPrefix(c, ".") || strings.HasSuffix(c, ".lock")
+		}) {
+		errs = append(errs, fmt.Errorf("base_branch %q is not a branch name git accepts", m.BaseBranch))
+	}
 	seen := map[string]bool{}
 	verifyEnabled := false
 	for _, ref := range cfg.Gates {
@@ -409,6 +424,8 @@ func loadGate(read readFunc, ref GateRef) (Gate, error) {
 	}
 	if g.Retry < 0 {
 		errs = append(errs, errors.New("retry must not be negative"))
+	} else if g.Retry > 10 { // more cannot finish within the hour's backoff, and a huge one would wrap to "no limit"
+		errs = append(errs, errors.New("retry must be at most 10"))
 	}
 	if g.MustDifferFrom != "" && g.MustDifferFrom != "author" {
 		errs = append(errs, fmt.Errorf("must_differ_from is %q; only \"author\" is supported", g.MustDifferFrom))

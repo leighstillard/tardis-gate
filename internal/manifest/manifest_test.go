@@ -76,6 +76,9 @@ func TestLoadSample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if m.BaseBranch != "main" {
+		t.Errorf("default base branch = %q, want main", m.BaseBranch)
+	}
 	if got, want := names(m.Gates), []string{"simplify", "verify", "design", "review"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("gates = %v, want %v", got, want)
 	}
@@ -134,6 +137,7 @@ func TestGateValidation(t *testing.T) {
 		"name differs": {"name: other\nrun: [make]\ntimeout: 1m\n", `name is "other", want "lint"`},
 		"bad differ":   {"name: lint\nrun: [make]\ntimeout: 1m\nmust_differ_from: me\n", "must_differ_from"},
 		"neg retry":    {"name: lint\nrun: [make]\ntimeout: 1m\nretry: -1\n", "retry must not be negative"},
+		"huge retry":   {"name: lint\nrun: [make]\ntimeout: 1m\nretry: 4294967295\n", "retry must be at most 10"},
 		"unknown key":  {"name: lint\nrun: [make]\ntimeout: 1m\nrunn: [x]\n", "runn"},
 	} {
 		root := copySample(t, map[string]string{ConfigPath: cfg, ".tardis/gates/lint/gate.yml": tc.yml})
@@ -482,6 +486,17 @@ func TestCheckHeadRefusesAShallowClone(t *testing.T) {
 	id, _ := CommitID(clone, "HEAD")
 	if err := CheckHead(clone, id, id); err == nil || !strings.Contains(err.Error(), "shallow") {
 		t.Errorf("CheckHead in a shallow clone: err = %v", err)
+	}
+}
+
+func TestBaseBranchMustBeABranchName(t *testing.T) {
+	for _, b := range []string{"foo bar", "a..b", "-x", "x.lock", "x/", "x//y", "refs~1", "foo/.bar", "foo/x.lock/bar"} {
+		root := copySample(t, map[string]string{".tardis/config.yml": "base_branch: '" + b + "'\ngates:\n  - name: simplify\n"})
+		wantErr(t, root, "is not a branch name git accepts")
+	}
+	root := copySample(t, map[string]string{".tardis/config.yml": "base_branch: release/2.x\ngates:\n  - name: simplify\n"})
+	if _, err := Load(root); err != nil {
+		t.Errorf("base_branch release/2.x: %v", err)
 	}
 }
 
