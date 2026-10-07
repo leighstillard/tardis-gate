@@ -63,6 +63,54 @@ func TestRunnerPostsSuccessOnlyForItsOwnPass(t *testing.T) {
 	}
 }
 
+func TestRunnerPassIsBoundToItsBaseAndClaim(t *testing.T) {
+	r, url, _, check := runnerFixture(t)
+	ctx := context.Background()
+	w := t.TempDir()
+	g := func(args ...string) string {
+		return strings.TrimSpace(run(t, "git", append([]string{"-C", w}, args...)...))
+	}
+	g("clone", "-q", url, ".")
+	g("config", "user.name", "t")
+	g("config", "user.email", "t@example.com")
+	// main moves on twice and the branch does not, so both base commits have
+	// the same merge base with it.
+	g("checkout", "-q", "main")
+	g("commit", "-q", "--allow-empty", "-m", "m1")
+	m1 := g("rev-parse", "HEAD")
+	g("commit", "-q", "--allow-empty", "-m", "m2")
+	m2 := g("rev-parse", "HEAD")
+	g("push", "-q", "origin", "main")
+	success := func(baseID, sha string) error {
+		return r.PostCheck(ctx, CheckIn{RepoURL: url, Base: "main", BaseID: baseID, SHA: sha, Gate: "simplify", Conclusion: "success"})
+	}
+
+	if v, err := r.Rerun(ctx, RerunIn{RepoURL: url, Base: "main", BaseID: m1, Tip: check, Gate: "simplify"}); err != nil || !v.Pass {
+		t.Fatalf("rerun on m1: %+v, %v", v, err)
+	}
+	if err := success(m2, check); err == nil {
+		t.Error("a pass on base m1 authorised a success on base m2")
+	}
+	if err := success(m1, check); err != nil {
+		t.Errorf("success on the base the gate passed on: %v", err)
+	}
+
+	// The same code under a rewritten claim was never re-run.
+	g("checkout", "-q", "feature")
+	g("reset", "-q", "--hard", check+"^")
+	rewritten, err := chain.Commit(w, "simplify", "a different claim", "anthropic/claude-code/test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g("push", "-q", "--force", "origin", "feature")
+	if g("rev-parse", rewritten+"^{tree}") != g("rev-parse", check+"^{tree}") {
+		t.Fatal("rewritten check changed the tree")
+	}
+	if err := success(m1, rewritten); err == nil {
+		t.Error("a pass for one check commit authorised a success for a rewritten one")
+	}
+}
+
 func TestRunnerRefusesABaseItDidNotChoose(t *testing.T) {
 	r, url, base, check := runnerFixture(t)
 	ctx := context.Background()

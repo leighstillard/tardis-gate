@@ -38,19 +38,16 @@ type Runner struct {
 	// re-run. Persist it when check runs become real (build 4).
 }
 
-// passKey names what a re-run judged: the gate, and the diff it read, as the
-// merge base and the tip's tree. Check commits change no tree, so the final
-// tip of a pass has the same key as the tip each gate was re-run on.
-func passKey(ctx context.Context, dir, repoURL, gate, baseID, tip string) (string, error) {
-	mb, err := gitOut(ctx, dir, "merge-base", baseID, tip)
+// passKey names what a re-run judged: the gate, the base commit it ran on,
+// and the gate's check commit, which fixes the claim and the code under it.
+// Later checks are empty commits on top, so the final tip of a pass yields
+// the same check commit as the tip the gate was re-run on.
+func passKey(dir, repoURL, gate, baseID, tip string) (string, error) {
+	check, err := chain.CheckCommit(dir, baseID, tip, gate)
 	if err != nil {
 		return "", err
 	}
-	tree, err := gitOut(ctx, dir, "rev-parse", tip+"^{tree}")
-	if err != nil {
-		return "", err
-	}
-	return strings.Join([]string{repoURL, gate, mb, tree}, "\x00"), nil
+	return strings.Join([]string{repoURL, gate, baseID, check}, "\x00"), nil
 }
 
 // checkBase refuses a base the runner did not choose. The workflow, which an
@@ -203,7 +200,7 @@ func (r *Runner) Rerun(ctx context.Context, in RerunIn) (Verdict, error) {
 	}
 	switch res.ExitCode {
 	case 0:
-		key, err := passKey(ctx, dir, in.RepoURL, in.Gate, in.BaseID, in.Tip)
+		key, err := passKey(dir, in.RepoURL, in.Gate, in.BaseID, in.Tip)
 		if err != nil {
 			return Verdict{}, err
 		}
@@ -240,7 +237,7 @@ func (r *Runner) PostCheck(ctx context.Context, in CheckIn) error {
 		if err != nil {
 			return err
 		}
-		key, err := passKey(ctx, dir, in.RepoURL, in.Gate, in.BaseID, in.SHA)
+		key, err := passKey(dir, in.RepoURL, in.Gate, in.BaseID, in.SHA)
 		if err != nil {
 			return err
 		}
