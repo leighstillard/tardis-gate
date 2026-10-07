@@ -186,10 +186,13 @@ func decode(data []byte, v any) error {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(v); err != nil && !errors.Is(err, io.EOF) { // io.EOF: empty file
-		return err
+		// yaml names Go types ("field x not found in type manifest.GateRef"); users need the key.
+		return errors.New(goType.ReplaceAllString(err.Error(), ""))
 	}
 	return nil
 }
+
+var goType = regexp.MustCompile(` in type [\w.]+`)
 
 // Applies reports whether g applies to a diff touching the given paths.
 func (g Gate) Applies(changed []string) bool {
