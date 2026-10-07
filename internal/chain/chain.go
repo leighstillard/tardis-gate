@@ -293,9 +293,10 @@ func git(dir string, args ...string) (string, error) {
 	return strings.TrimSpace(out), err
 }
 
-// gitRaw returns git's stdout untouched.
+// gitRaw returns git's stdout untouched. Replacement objects are off: a local
+// refs/replace entry must not change what a commit ID means.
 func gitRaw(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd := exec.Command("git", append([]string{"--no-replace-objects", "-C", dir}, args...)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {

@@ -308,6 +308,19 @@ func TestLogOutputEncodingDoesNotRecodeGates(t *testing.T) {
 	want(t, r.verify("café"), "café", Valid)
 }
 
+func TestReplaceRefsCannotHideCode(t *testing.T) {
+	// B changes code after the simplify check. A local replacement makes B
+	// look like an empty check commit; verification must still see B.
+	r := newRepo(t)
+	r.branch()
+	a := r.code("A")
+	chk := r.check("simplify", a, "ok")
+	b := r.code("B")
+	fake := r.git("commit-tree", chk+"^{tree}", "-p", chk, "-m", "ship-check: other")
+	r.git("replace", b, fake)
+	want(t, r.verify("simplify"), "simplify", broken("superseded"))
+}
+
 func TestCommitEncodingDoesNotBreakUnicodeGates(t *testing.T) {
 	r := newRepo(t)
 	r.branch()
