@@ -81,6 +81,17 @@ func Load(root string) (*Manifest, error) {
 	}
 	defer r.Close()
 	return load(func(p string) ([]byte, error) {
+		// Refuse symlinks anywhere on the path, as LoadRev must (git cannot
+		// read through them), so lint never approves what resolve can't see.
+		for _, q := range prefixes(p) {
+			fi, err := r.Lstat(filepath.FromSlash(q))
+			if err != nil {
+				return nil, err
+			}
+			if fi.Mode()&fs.ModeSymlink != 0 {
+				return nil, fmt.Errorf("%s is a symlink; not supported", q)
+			}
+		}
 		f, err := r.Open(filepath.FromSlash(p))
 		if err != nil {
 			return nil, err
@@ -98,25 +109,51 @@ func LoadRev(repo, rev string) (*Manifest, error) {
 		return nil, err
 	}
 	return load(func(p string) ([]byte, error) {
-		// Only an empty, successful listing means "not found"; any git failure,
-		// or an entry that is not a file, must not fall back to a reference gate.
-		entry, err := gitOut(repo, "ls-tree", "-z", id, "--", p)
-		if err != nil {
-			return nil, fmt.Errorf("%s at %s: %w", p, rev, err)
+		// Walk the path one entry at a time. Only an empty, successful listing
+		// means "not found"; a git failure, or a symlink or submodule on the
+		// path (which git cannot list through), must not fall back to a
+		// reference gate.
+		var obj string
+		for _, q := range prefixes(p) {
+			entry, err := gitOut(repo, "ls-tree", "-z", id, "--", q)
+			if err != nil {
+				return nil, fmt.Errorf("%s at %s: %w", p, rev, err)
+			}
+			if entry == "" {
+				return nil, fs.ErrNotExist
+			}
+			f := strings.Fields(entry) // <mode> <type> <object>\t<path>\x00
+			want := "tree"
+			if q == p {
+				want = "blob"
+			}
+			if len(f) < 3 || f[1] != want || f[0] == "120000" {
+				kind := map[string]string{"tree": "directory", "blob": "file", "commit": "submodule"}[f[1]]
+				if f[0] == "120000" {
+					kind = "symlink"
+				}
+				return nil, fmt.Errorf("%s at %s is a %s; want a %s", q, rev, kind, map[string]string{"tree": "directory", "blob": "file"}[want])
+			}
+			obj = f[2]
 		}
-		if entry == "" {
-			return nil, fs.ErrNotExist
-		}
-		f := strings.Fields(entry) // <mode> <type> <object>\t<path>\x00
-		if len(f) < 3 || f[1] != "blob" {
-			return nil, fmt.Errorf("%s at %s is not a file", p, rev)
-		}
-		out, err := gitOut(repo, "cat-file", "blob", f[2])
+		out, err := gitOut(repo, "cat-file", "blob", obj)
 		if err != nil {
 			return nil, fmt.Errorf("%s at %s: %w", p, rev, err)
 		}
 		return []byte(out), nil
 	})
+}
+
+// prefixes returns each ancestor of a slash-separated path, then the path:
+// a, a/b, a/b/c.
+func prefixes(p string) []string {
+	var out []string
+	for i, c := range p {
+		if c == '/' {
+			out = append(out, p[:i])
+		}
+	}
+	return append(out, p)
 }
 
 // CommitID resolves rev to a commit object ID, so later reads cannot see a

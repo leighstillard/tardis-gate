@@ -192,6 +192,13 @@ func TestLoadDoesNotFollowSymlinksOut(t *testing.T) {
 func committedSample(t *testing.T, edits map[string]string) string {
 	t.Helper()
 	root := copySample(t, edits)
+	commitAll(t, root)
+	return root
+}
+
+// commitAll commits everything under root to main in a new repository.
+func commitAll(t *testing.T, root string) {
+	t.Helper()
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"add", "-A"}, {"commit", "-q", "-m", "base"}} {
@@ -201,7 +208,6 @@ func committedSample(t *testing.T, edits map[string]string) string {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
-	return root
 }
 
 func TestLoadRevFailsClosedOnANonBlobGate(t *testing.T) {
@@ -210,6 +216,23 @@ func TestLoadRevFailsClosedOnANonBlobGate(t *testing.T) {
 	root := committedSample(t, map[string]string{".tardis/gates/simplify/gate.yml/x": "x"})
 	if _, err := LoadRev(root, "main"); err == nil || !strings.Contains(err.Error(), ".tardis/gates/simplify/gate.yml") {
 		t.Errorf("err = %v, want a failure naming the override", err)
+	}
+}
+
+func TestSymlinkedGateDirIsRefusedByLintAndResolve(t *testing.T) {
+	// .tardis/gates/simplify -> ../../tools/simplify. git cannot list through
+	// the link, so both loaders must refuse it rather than use the reference.
+	root := copySample(t, map[string]string{"tools/simplify/gate.yml": "name: simplify\nrun: [make]\ntimeout: 1m\n"})
+	if err := os.MkdirAll(filepath.Join(root, ".tardis", "gates"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../tools/simplify", filepath.Join(root, ".tardis", "gates", "simplify")); err != nil {
+		t.Fatal(err)
+	}
+	wantErr(t, root, "symlink")
+	commitAll(t, root)
+	if _, err := LoadRev(root, "main"); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("LoadRev err = %v, want a symlink refusal", err)
 	}
 }
 

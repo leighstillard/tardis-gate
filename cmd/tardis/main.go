@@ -3,6 +3,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -16,7 +17,7 @@ import (
 
 const usage = `usage:
   tardis check commit <gate> --summary-file <file> --tool <vendor/tool/model> [--repo <dir>]
-  tardis chain verify <base> <head> --gates <a,b,c> [--repo <dir>]
+  tardis chain verify <base> <head> (--gates <a,b,c> | --manifest) [--repo <dir>]
   tardis manifest lint [--repo <dir>]
   tardis manifest resolve <base> <head> [--repo <dir>]
   tardis version
@@ -107,13 +108,25 @@ func checkCommit(args []string, stdout, stderr io.Writer) int {
 func chainVerify(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("chain verify", flag.ContinueOnError)
 	gates := fs.String("gates", "", "gates that must be valid: a,b,c or the JSON array from manifest resolve")
+	fromManifest := fs.Bool("manifest", false, "resolve the gates from base's manifest and verify them against the same commits")
 	repo := fs.String("repo", ".", "repository directory")
-	pos, code, ok := parse(fs, "chain verify <base> <head> --gates <a,b,c>", args, 2, stderr)
+	pos, code, ok := parse(fs, "chain verify <base> <head> (--gates <a,b,c> | --manifest)", args, 2, stderr)
 	if !ok {
 		return code
 	}
 	var list []string
-	if v := strings.TrimSpace(*gates); strings.HasPrefix(v, "[") {
+	if *fromManifest {
+		if *gates != "" {
+			fmt.Fprintln(stderr, "chain verify: use --gates or --manifest, not both")
+			return 2
+		}
+		ids, names, _, err := resolveGates(*repo, pos[0], pos[1])
+		if err != nil {
+			fmt.Fprintln(stderr, "chain verify:", err)
+			return 2
+		}
+		pos, list = ids[:], names
+	} else if v := strings.TrimSpace(*gates); strings.HasPrefix(v, "[") {
 		// An explicit [] is manifest resolve saying no gate applies: nothing to verify.
 		if err := json.Unmarshal([]byte(v), &list); err != nil {
 			fmt.Fprintln(stderr, "chain verify: --gates:", err)
@@ -175,34 +188,39 @@ func manifestResolve(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return code
 	}
-	// Resolve both names once, so policy and diff come from the same revisions.
-	var ids [2]string
-	for i, rev := range pos {
-		id, err := manifest.CommitID(*repo, rev)
-		if err != nil {
-			fmt.Fprintln(stderr, "manifest resolve:", err)
-			return 2
-		}
-		ids[i] = id
-	}
-	// The policy comes from base, so a branch cannot drop the gates it must pass.
-	m, err := manifest.LoadRev(*repo, ids[0])
-	if err != nil {
-		fmt.Fprintln(stderr, "manifest resolve:", strings.ReplaceAll(err.Error(), "\n", "; "))
-		return 1
-	}
-	changed, err := manifest.Changed(*repo, ids[0], ids[1])
+	_, names, code, err := resolveGates(*repo, pos[0], pos[1])
 	if err != nil {
 		fmt.Fprintln(stderr, "manifest resolve:", err)
-		return 2
-	}
-	names := []string{}
-	for _, g := range m.Resolve(changed) {
-		names = append(names, g.Name)
+		return code
 	}
 	out, _ := json.Marshal(names) // a []string always marshals
 	fmt.Fprintln(stdout, string(out))
 	return 0
+}
+
+// resolveGates resolves base and head once, so policy and diff come from the
+// same revisions, and returns their IDs and the gates that apply. The policy
+// comes from base, so a branch cannot drop the gates it must pass. On error,
+// code is 1 for a bad manifest and 2 otherwise.
+func resolveGates(repo, base, head string) (ids [2]string, names []string, code int, err error) {
+	for i, rev := range []string{base, head} {
+		if ids[i], err = manifest.CommitID(repo, rev); err != nil {
+			return ids, nil, 2, err
+		}
+	}
+	m, err := manifest.LoadRev(repo, ids[0])
+	if err != nil {
+		return ids, nil, 1, errors.New(strings.ReplaceAll(err.Error(), "\n", "; "))
+	}
+	changed, err := manifest.Changed(repo, ids[0], ids[1])
+	if err != nil {
+		return ids, nil, 2, err
+	}
+	names = []string{}
+	for _, g := range m.Resolve(changed) {
+		names = append(names, g.Name)
+	}
+	return ids, names, 0, nil
 }
 
 // releaseVersion is stamped by the release workflow with -ldflags -X.

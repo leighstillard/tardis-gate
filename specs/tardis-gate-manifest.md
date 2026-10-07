@@ -17,7 +17,8 @@ with a `gate.yml`, and one command resolves the ordered gate list a given diff m
   `author_vendors`, `auto_merge`, `merge_method`. Each key lands with the build that
   reads it (`base_branch` -workflow, rest -runner / -pr); lint rejects it until then.
 - `tardis manifest lint` → schema/order errors; `tardis manifest resolve <base> <head>`
-  → ordered JSON of applicable gates for the diff (feeds -evidence `--gates`, -workflow).
+  → ordered JSON of applicable gates for the diff (feeds -evidence `--gates`, -workflow);
+  `chain verify --manifest` resolves and verifies on the same commit IDs in one call.
 - Touches: `gates/`, `internal/manifest`, `cmd/tardis`. Does not touch: Temporal, GitHub
 
 ## Acceptance checks

@@ -54,6 +54,30 @@ func TestManifestLintAndResolveFeedChainVerify(t *testing.T) {
 	}
 }
 
+func TestChainVerifyManifestUsesOneResolution(t *testing.T) {
+	dir, git := gitRepo(t) // feature: one code commit after main
+	git("checkout", "-q", "main")
+	cfg := filepath.Join(dir, ".tardis", "config.yml")
+	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, []byte("gates:\n  - name: simplify\n  - name: design\n    applies_when: [\"web/**\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "-A")
+	git("commit", "-q", "-m", "enrol")
+	git("checkout", "-q", "feature")
+	git("rebase", "-q", "main")
+
+	code, out, stderr := runCLI("chain", "verify", "main", "HEAD", "--manifest", "--repo", dir)
+	if code != 1 || !strings.Contains(out, `"simplify": "missing"`) || strings.Contains(out, "design") {
+		t.Errorf("--manifest: exit %d out %q err %q, want simplify missing and no design", code, out, stderr)
+	}
+	if code, _, _ := runCLI("chain", "verify", "main", "HEAD", "--manifest", "--gates", "x", "--repo", dir); code != 2 {
+		t.Errorf("--manifest with --gates: exit %d, want 2", code)
+	}
+}
+
 func TestChainVerifyExplicitEmptyGateList(t *testing.T) {
 	dir, _ := gitRepo(t)
 	if code, out, stderr := runCLI("chain", "verify", "main", "HEAD", "--gates", "[]", "--repo", dir); code != 0 || strings.TrimSpace(out) != "{}" {
