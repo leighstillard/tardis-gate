@@ -8,8 +8,8 @@ It is a framework rather than a fixed policy. It ships four reference reviews, a
 repository that enrols chooses which to run and can add its own. It runs on Temporal Cloud
 or on a local `temporal server start-dev`.
 
-**Status:** design stage. The specs below are complete; no code has been written yet. The
-project is being built in public.
+**Status:** builds 1 and 2 of 5 are in: check-commit evidence (released as v0.1.0) and
+the gate manifest. The rest is specified below and being built in public.
 
 ## The problem
 
