@@ -97,4 +97,9 @@ func TestUsageErrorsExit2(t *testing.T) {
 			t.Errorf("%v: exit %d, stderr %q; want 0 and a usage line", args, code, stderr)
 		}
 	}
+	for _, arg := range []string{"-h", "--help", "help"} {
+		if code, out, _ := runCLI(arg); code != 0 || !strings.Contains(out, "tardis chain verify") {
+			t.Errorf("%s: exit %d, stdout %q; want 0 and the usage", arg, code, out)
+		}
+	}
 }

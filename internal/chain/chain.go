@@ -121,7 +121,7 @@ func judge(body, trailers, gate, lastCode string) string {
 	switch {
 	case reason != "":
 		return broken(reason)
-	case checkGateName(gate) != nil:
+	case CheckGateName(gate) != nil:
 		return broken("bad-gate")
 	case t[TrailerCheck] != gate:
 		return broken("subject-mismatch")

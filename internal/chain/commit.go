@@ -23,7 +23,8 @@ func CheckTool(tool string) error {
 	return fmt.Errorf("tool %q: vendor must be one of %s", tool, strings.Join(Vendors, ", "))
 }
 
-func checkGateName(gate string) error {
+// CheckGateName reports whether gate can name a check commit.
+func CheckGateName(gate string) error {
 	if gate == "" || strings.ContainsAny(gate, " \t\n/:") {
 		return fmt.Errorf("gate %q: must be a non-empty name without spaces, slashes or colons", gate)
 	}
@@ -31,10 +32,12 @@ func checkGateName(gate string) error {
 }
 
 // Commit writes an empty check commit for gate on HEAD of the repo in dir.
-// Ship-Check-Of is the nearest code commit at or before HEAD. It returns the
-// new commit's SHA, and undoes the commit if it would not verify as written.
+// Ship-Check-Of is the nearest code commit at or before HEAD. The commit is
+// built with commit-tree (no hooks, no message cleanup, parent's exact tree),
+// judged exactly as Verify would judge it, and only then published with a
+// compare-and-swap on HEAD, so a failure or a concurrent commit changes nothing.
 func Commit(dir, gate, summary, tool string) (string, error) {
-	if err := checkGateName(gate); err != nil {
+	if err := CheckGateName(gate); err != nil {
 		return "", err
 	}
 	if err := CheckTool(tool); err != nil {
@@ -47,41 +50,36 @@ func Commit(dir, gate, summary, tool string) (string, error) {
 	if n := len(strings.Split(summary, "\n")); n > MaxBodyLines {
 		return "", fmt.Errorf("summary is %d lines; the limit is %d", n, MaxBodyLines)
 	}
-	// --allow-empty still commits whatever is staged; refuse rather than hide code.
+	// The check commit never includes the index, but staged work next to a
+	// check is almost always a mistake; say so rather than leave it behind.
 	if _, err := git(dir, "diff", "--cached", "--quiet"); err != nil {
 		return "", errors.New("staged changes present; commit or unstage them first")
 	}
-	of, err := lastCode(dir)
+	before, err := git(dir, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
 		return "", err
 	}
-	before, err := git(dir, "rev-parse", "HEAD")
+	of, err := lastCode(dir, before)
 	if err != nil {
 		return "", err
 	}
 	// The trailers get their own paragraph so they never merge with a
-	// trailer-like last line of the summary. Hooks are off (prepare-commit-msg
-	// ignores --no-verify) and cleanup keeps "#" lines, so the message is ours.
+	// trailer-like last line of the summary.
 	trailers := TrailerCheck + ": " + gate + "\n" + TrailerOf + ": " + of + "\n" + TrailerTool + ": " + tool
-	if _, err := git(dir, "-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "--no-verify", "-q",
-		"--cleanup=whitespace", "-m", SubjectPrefix+gate, "-m", summary, "-m", trailers); err != nil {
-		return "", err
-	}
-	head, err := git(dir, "rev-parse", "HEAD")
+	sha, err := git(dir, "commit-tree", before+"^{tree}", "-p", before,
+		"-m", SubjectPrefix+gate, "-m", summary, "-m", trailers)
 	if err != nil {
 		return "", err
 	}
-	if s, err := asVerified(dir, head, before, gate, of); err != nil || s != Valid {
-		// Only our own empty commit is undone; the index and work tree stay as they were.
-		if _, rerr := git(dir, "reset", "-q", "--soft", before); rerr != nil {
-			return "", fmt.Errorf("check commit came out %s (%v) and could not be undone: %v", s, err, rerr)
-		}
-		if err != nil {
-			return "", err
-		}
-		return "", fmt.Errorf("the check commit came out %s; rewrite the summary and retry", s)
+	if s, err := asVerified(dir, sha, before, gate, of); err != nil {
+		return "", err
+	} else if s != Valid {
+		return "", fmt.Errorf("the check commit would be %s; rewrite the summary and retry", s)
 	}
-	return head, nil
+	if _, err := git(dir, "update-ref", "-m", "tardis: check commit "+gate, "HEAD", sha, before); err != nil {
+		return "", fmt.Errorf("HEAD moved while the check commit was written; nothing changed: %v", err)
+	}
+	return sha, nil
 }
 
 // asVerified judges commit sha exactly as Verify would on top of parent.
@@ -113,10 +111,10 @@ func asVerified(dir, sha, parent, gate, of string) (string, error) {
 // ponytail: fixed window; page through history if a branch ever stacks more.
 const maxCheckRun = 500
 
-// lastCode returns the nearest first-parent ancestor of HEAD (HEAD included)
+// lastCode returns the nearest first-parent ancestor of start (start included)
 // that is not an empty, single-parent check attempt.
-func lastCode(dir string) (string, error) {
-	commits, err := history(dir, "--first-parent", fmt.Sprintf("--max-count=%d", maxCheckRun+1), "HEAD")
+func lastCode(dir, start string) (string, error) {
+	commits, err := history(dir, "--first-parent", fmt.Sprintf("--max-count=%d", maxCheckRun+1), start)
 	if err != nil {
 		return "", err
 	}
@@ -134,5 +132,5 @@ func lastCode(dir string) (string, error) {
 			return c.sha, nil
 		}
 	}
-	return "", errors.New("no code commit found before HEAD")
+	return "", errors.New("no code commit found before " + start)
 }
