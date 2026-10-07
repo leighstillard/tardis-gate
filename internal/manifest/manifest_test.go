@@ -325,6 +325,34 @@ func TestLoadRevIgnoresReplaceRefs(t *testing.T) {
 	}
 }
 
+func TestChangedSeesSubmoduleChangesDespiteConfig(t *testing.T) {
+	root := committedSample(t, nil)
+	git := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	for _, k := range []string{"GIT_AUTHOR", "GIT_COMMITTER"} {
+		t.Setenv(k+"_NAME", "t")
+		t.Setenv(k+"_EMAIL", "t@x")
+	}
+	base := git("rev-parse", "HEAD")
+	git("checkout", "-q", "-b", "f")
+	git("update-index", "--add", "--cacheinfo", "160000,"+base+",web/vendor")
+	git("commit", "-q", "-m", "add a submodule under web/")
+	git("config", "diff.ignoreSubmodules", "all")
+	changed, err := Changed(root, "main", "f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(changed, []string{"web/vendor"}) {
+		t.Errorf("changed = %v, want [web/vendor] (design must apply)", changed)
+	}
+}
+
 func TestLoadRevFailsClosedOnAMissingObject(t *testing.T) {
 	// The override's directory object is gone (a partial or damaged clone):
 	// LoadRev must fail rather than read the override as absent.

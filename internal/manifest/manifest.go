@@ -379,9 +379,10 @@ func (m *Manifest) Resolve(changed []string) []Gate {
 }
 
 // Changed lists the paths a branch changes relative to its merge base with
-// base. Deleted and renamed-away paths are included.
+// base. Deleted and renamed-away paths are included, and so are submodule
+// changes, whatever diff.ignoreSubmodules says.
 func Changed(root, base, head string) ([]string, error) {
-	out, err := gitOut(root, "diff", "--name-only", "--no-renames", "-z", base+"..."+head)
+	out, err := gitOut(root, "diff", "--name-only", "--no-renames", "--ignore-submodules=none", "-z", base+"..."+head)
 	if err != nil {
 		return nil, err
 	}
