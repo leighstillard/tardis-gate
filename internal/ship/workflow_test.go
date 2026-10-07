@@ -24,6 +24,7 @@ type fake struct {
 	retry   int      // every gate's retry count
 	calls   []string // "author:<gate>@<code>", "rerun:<gate>@<tip>", ...
 	events  []string
+	passOf  map[string]string // event → its pass ID
 	checks  []string
 	checkOn []string // "<name> <conclusion>@<sha>"
 	openPRs int
@@ -100,6 +101,10 @@ func (f *fake) register(env *testsuite.TestWorkflowEnvironment) {
 	reg(ActNotify, func(_ context.Context, e Event) error {
 		f.mu.Lock()
 		f.events = append(f.events, e.String())
+		if f.passOf == nil {
+			f.passOf = map[string]string{}
+		}
+		f.passOf[e.String()] = e.Pass
 		on := f.onEvent
 		f.mu.Unlock()
 		if on != nil {
@@ -393,6 +398,32 @@ func TestContinuesAsNewAfterMaxPasses(t *testing.T) {
 	var next Input
 	if err := converter.GetDefaultDataConverter().FromPayloads(can.Input, &next); err != nil || next.Head != fmt.Sprintf("c%d", MaxPasses+1) {
 		t.Errorf("continued with %+v, %v; want the newest head", next, err)
+	}
+}
+
+func TestEachPassHasItsOwnID(t *testing.T) {
+	// Rejected, then the same commit requested again: a notification from
+	// the first pass, delivered again, must be told from the second's.
+	f := &fake{gates: []string{"simplify"}}
+	calls := 0
+	f.rerun = func(RerunIn) (Verdict, error) {
+		calls++
+		return Verdict{Pass: calls > 1, Reason: "flaky"}, nil
+	}
+	env := newEnv(t, f)
+	env.RegisterDelayedCallback(func() { env.SignalWorkflow(SignalNewHead, NewHead{SHA: "c1"}) }, time.Hour)
+	env.ExecuteWorkflow(Ship, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	first, last := f.passOf["simplify rejected: flaky"], f.passOf["completed c1+simplify"]
+	if first == "" || last == "" || first == last {
+		t.Errorf("pass of the rejection %q, of the completion %q; want two different IDs", first, last)
+	}
+	v, err := env.QueryWorkflow(QueryPass)
+	var now string
+	if err != nil || v.Get(&now) != nil || now != last {
+		t.Errorf("query pass = %q, %v; want %q", now, err, last)
 	}
 }
 

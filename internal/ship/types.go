@@ -14,6 +14,7 @@ const (
 	RunnerQueue   = "runner" // runner activities only
 	SignalNewHead = "new-head"
 	QueryHead     = "head"
+	QueryPass     = "pass"
 	WorkflowName  = "Ship"
 )
 
@@ -48,6 +49,7 @@ type NewHead struct{ SHA string }
 // Event is one thing the author hears about.
 type Event struct {
 	Kind   string // started | passed | rejected | failed | pr-created | completed
+	Pass   string // the pass it belongs to: <run ID>/<n>
 	Gate   string
 	SHA    string
 	Detail string

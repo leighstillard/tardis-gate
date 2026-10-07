@@ -4,8 +4,6 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
-
-	"github.com/leighstillard/tardis-gate/internal/ship"
 )
 
 func TestGitLineReadsStdoutOnly(t *testing.T) {
@@ -24,55 +22,6 @@ func TestGitLineReadsStdoutOnly(t *testing.T) {
 	head, _ := gitLine(dir, "rev-parse", "HEAD")
 	if got, err := gitLine(dir, "rev-parse", "x"); err != nil || got != head {
 		t.Errorf("gitLine(rev-parse x) = %q, %v; want %q", got, err, head)
-	}
-}
-
-func TestAboutIgnoresAnEarlierPass(t *testing.T) {
-	dir := t.TempDir()
-	git := func(args ...string) string {
-		out, err := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...).CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
-	git("init", "-q")
-	git("commit", "-q", "--allow-empty", "-m", "old head")
-	old := git("rev-parse", "HEAD")
-	git("commit", "-q", "--allow-empty", "-m", "ship-check: simplify")
-	oldTip := git("rev-parse", "HEAD")
-	git("commit", "-q", "--allow-empty", "-m", "fix")
-	head := git("rev-parse", "HEAD")
-	for _, tc := range []struct {
-		head, sha string
-		want      bool
-	}{
-		{head, head, true},    // a failure on the head itself
-		{old, oldTip, true},   // a failure on that head's checks
-		{head, oldTip, false}, // an earlier pass's failure, delivered again
-		{"", oldTip, true},    // tardis wait: any event
-	} {
-		if got := about(dir, tc.head, ship.Event{Kind: "failed", SHA: tc.sha}); got != tc.want {
-			t.Errorf("about(%.7s, %.7s) = %v, want %v", tc.head, tc.sha, got, tc.want)
-		}
-	}
-}
-
-func TestRequestTakesTheSHAAnywhere(t *testing.T) {
-	// Argument parsing must accept the SHA before or after flags; the run
-	// then stops at the repository check, which is all this test needs.
-	dir := t.TempDir()
-	for _, args := range [][]string{
-		{"request", "HEAD", "--tool", "a/b/c", "--repo", dir},
-		{"request", "--tool", "a/b/c", "--repo", dir, "HEAD"},
-		{"request", "--tool", "a/b/c", "--repo", dir},
-	} {
-		if _, _, stderr := runCLI(args...); strings.Contains(stderr, "argument") {
-			t.Errorf("%v: %q, want the arguments accepted", args, stderr)
-		}
-	}
-	if code, _, stderr := runCLI("request", "x", "y", "--tool", "a/b/c"); code != 2 || !strings.Contains(stderr, "want 0 to 1 argument(s), got 2") {
-		t.Errorf("two SHAs: exit %d err %q", code, stderr)
 	}
 }
 

@@ -2,6 +2,7 @@ package ship
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -89,8 +90,15 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 	if err := workflow.SetQueryHandler(ctx, QueryHead, func() (string, error) { return head, nil }); err != nil {
 		return "", err
 	}
+	// Each pass has an ID, carried on its events, so a notification delivered
+	// again from an earlier pass can be told apart, even for the same commit.
+	pass := ""
+	if err := workflow.SetQueryHandler(ctx, QueryPass, func() (string, error) { return pass, nil }); err != nil {
+		return "", err
+	}
 	heads := workflow.GetSignalChannel(ctx, SignalNewHead)
-	authorQ := AuthorQueue(workflow.GetInfo(ctx).WorkflowExecution.ID)
+	info := workflow.GetInfo(ctx)
+	authorQ := AuthorQueue(info.WorkflowExecution.ID)
 
 	for passes := 0; ; passes++ {
 		head = latest(heads, head)
@@ -100,9 +108,11 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 			next.Head = head
 			return "", workflow.NewContinueAsNewError(ctx, Ship, next)
 		}
-		notify(ctx, authorQ, Event{Kind: "started", SHA: head})
+		pass = fmt.Sprintf("%s/%d", info.WorkflowExecution.RunID, passes)
+		pctx := workflow.WithValue(ctx, passKey{}, pass)
+		notify(pctx, authorQ, Event{Kind: "started", SHA: head})
 
-		passCtx, cancel := workflow.WithCancel(ctx)
+		passCtx, cancel := workflow.WithCancel(pctx)
 		done := workflow.NewBufferedChannel(ctx, 1)
 		workflow.Go(passCtx, func(gctx workflow.Context) {
 			done.Send(gctx, runGates(gctx, in, head, authorQ))
@@ -134,12 +144,12 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 			var ae *temporal.ApplicationError
 			moved := errors.As(err, &ae) && (ae.Type() == "BranchMoved" || ae.Type() == "BaseMoved")
 			if err != nil && !moved {
-				notify(ctx, authorQ, Event{Kind: "failed", Gate: "open-pr", SHA: res.Tip, Detail: reason(err)})
+				notify(pctx, authorQ, Event{Kind: "failed", Gate: "open-pr", SHA: res.Tip, Detail: reason(err)})
 				return "", err
 			}
 			if !moved {
-				notify(ctx, authorQ, Event{Kind: "pr-created", SHA: res.Tip, Detail: url})
-				notify(ctx, authorQ, Event{Kind: "completed", SHA: res.Tip})
+				notify(pctx, authorQ, Event{Kind: "pr-created", SHA: res.Tip, Detail: url})
+				notify(pctx, authorQ, Event{Kind: "completed", SHA: res.Tip})
 				// Last look, with nothing blocking before the return: Temporal
 				// does not let a run complete past a signal that arrived
 				// meanwhile, so a head requested up to here starts it again.
@@ -156,7 +166,7 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 			if ae.Type() == "BaseMoved" {
 				detail = "the base moved since the gates ran; rebase onto it and run tardis request again"
 			}
-			notify(ctx, authorQ, Event{Kind: "failed", Gate: "open-pr", SHA: res.Tip, Detail: detail})
+			notify(pctx, authorQ, Event{Kind: "failed", Gate: "open-pr", SHA: res.Tip, Detail: detail})
 		}
 
 		// Rejected or failed: wait for the author to push a fix and ask again.
@@ -183,7 +193,7 @@ func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
 		}
 		// Both at once: a dead runner must not hold up the author's news, nor
 		// an absent author the failure check.
-		n := workflow.ExecuteActivity(deliveryOpts(ctx, authorQ), ActNotify, Event{Kind: kind, Gate: gate, SHA: tip, Detail: why})
+		n := workflow.ExecuteActivity(deliveryOpts(ctx, authorQ), ActNotify, Event{Kind: kind, Gate: gate, SHA: tip, Detail: why, Pass: passOf(ctx)})
 		c := postCheck(ctx, in, "", "", tip, gate, "failure", why)
 		_ = n.Get(ctx, nil)
 		_ = c.Get(ctx, nil) // best effort: a failure only blocks
@@ -263,8 +273,17 @@ func reason(err error) string {
 	return err.Error()
 }
 
+// passKey holds the current pass's ID in a workflow context.
+type passKey struct{}
+
+func passOf(ctx workflow.Context) string {
+	p, _ := ctx.Value(passKey{}).(string)
+	return p
+}
+
 // notify tells the author; delivery problems never stop the run.
 func notify(ctx workflow.Context, authorQ string, e Event) {
+	e.Pass = passOf(ctx)
 	_ = workflow.ExecuteActivity(deliveryOpts(ctx, authorQ), ActNotify, e).Get(ctx, nil)
 }
 

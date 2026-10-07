@@ -72,13 +72,17 @@ func (a *Author) AuthorReview(ctx context.Context, in AuthorReviewIn) (string, e
 			return "", err
 		}
 	}
+	// Push exactly the commit checked, not whatever HEAD is by then.
+	if tip, err = gitOut(ctx, a.Dir, "rev-parse", "HEAD"); err != nil {
+		return "", err
+	}
 	if err := a.onBranch(ctx); err != nil {
 		return "", err
 	}
-	if _, err := gitOut(ctx, a.Dir, "push", "-q", a.Remote, "HEAD:refs/heads/"+a.Branch); err != nil {
+	if _, err := gitOut(ctx, a.Dir, "push", "-q", a.Remote, tip+":refs/heads/"+a.Branch); err != nil {
 		return "", err
 	}
-	return gitOut(ctx, a.Dir, "rev-parse", "HEAD")
+	return tip, nil
 }
 
 // onBranch makes sure the working copy is still on the run's branch: a check

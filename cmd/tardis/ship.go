@@ -147,7 +147,7 @@ func request(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
-	if _, err := gitLine(*af.repo, "push", "-q", *af.remote, "HEAD:refs/heads/"+in.Branch); err != nil {
+	if _, err := gitLine(*af.repo, "push", "-q", *af.remote, head+":refs/heads/"+in.Branch); err != nil {
 		fmt.Fprintln(stderr, "request:", err)
 		return 2
 	}
@@ -179,7 +179,7 @@ func request(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	defer release()
-	return attach(c, wfID, *af.repo, *af.remote, in.Branch, *af.tool, head, stdout, stderr)
+	return attach(c, wfID, *af.repo, *af.remote, in.Branch, *af.tool, stdout, stderr)
 }
 
 // lockAttach takes this working copy's attach lock, so a run's events are
@@ -248,18 +248,20 @@ func wait(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	defer c.Close()
-	return attach(c, wfID, *af.repo, *af.remote, in.Branch, *af.tool, "", stdout, stderr)
+	return attach(c, wfID, *af.repo, *af.remote, in.Branch, *af.tool, stdout, stderr)
 }
 
 // attach serves the run's workflow and author activities until a terminal
-// event about head ("" for any): 0 when the PR is open, 1 when a gate
-// rejected or failed.
-func attach(c client.Client, wfID, repo, remote, branch, tool, head string, stdout, stderr io.Writer) int {
+// event from the current pass: 0 when the PR is open, 1 when a gate rejected
+// or failed.
+func attach(c client.Client, wfID, repo, remote, branch, tool string, stdout, stderr io.Writer) int {
 	events := make(chan ship.Event, 1)
 	a := &ship.Author{Dir: repo, Remote: remote, Branch: branch, Tool: tool, Exec: executor.Local{}, Out: stdout, Events: events}
 
 	wfw := workflowWorker(c)
-	aw := worker.New(c, ship.AuthorQueue(wfID), worker.Options{})
+	// Time to finish an in-flight activity, so a notification is acknowledged
+	// rather than delivered again to the next attachment.
+	aw := worker.New(c, ship.AuthorQueue(wfID), worker.Options{WorkerStopTimeout: 10 * time.Second})
 	aw.RegisterActivityWithOptions(a.AuthorReview, activity.RegisterOptions{Name: ship.ActAuthorReview})
 	aw.RegisterActivityWithOptions(a.Notify, activity.RegisterOptions{Name: ship.ActNotify})
 	for _, w := range []worker.Worker{wfw, aw} {
@@ -279,7 +281,7 @@ func attach(c client.Client, wfID, repo, remote, branch, tool, head string, stdo
 	for {
 		select {
 		case e := <-events:
-			if e.Kind != "completed" && about(repo, currentHead(c, wfID, head), e) {
+			if e.Kind != "completed" && current(c, wfID, e) {
 				return 1
 			}
 			// A head requested as the run finished starts it again, so stay
@@ -296,33 +298,23 @@ func attach(c client.Client, wfID, repo, remote, branch, tool, head string, stdo
 	}
 }
 
-// currentHead is head, or for tardis wait, which requested none, the run's
-// own: by the time an event arrives this process serves the workflow, so the
-// query is answered. "" if it cannot tell, so every event counts.
-func currentHead(c client.Client, wfID, head string) string {
-	if head != "" {
-		return head
+// current reports whether e comes from the run's current pass. Notifications
+// are delivered at least once, so one from an earlier pass, even about the
+// same commit, can arrive again and must not end this attachment. By the
+// time an event arrives this process serves the workflow, so the query is
+// answered; if it is not, the event counts.
+func current(c client.Client, wfID string, e ship.Event) bool {
+	if e.Pass == "" {
+		return true
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	v, err := c.QueryWorkflow(ctx, wfID, "", ship.QueryHead)
-	if err != nil || v.Get(&head) != nil {
-		return ""
-	}
-	return head
-}
-
-// about reports whether e concerns head: its commit contains head. A
-// notification from an earlier pass, delivered again because activities are
-// at-least-once, does not, and must not end the attachment for a new head.
-func about(repo, head string, e ship.Event) bool {
-	if head == "" || e.SHA == "" {
+	var pass string
+	v, err := c.QueryWorkflow(ctx, wfID, "", ship.QueryPass)
+	if err != nil || v.Get(&pass) != nil {
 		return true
 	}
-	cmd := exec.Command("git", "--no-replace-objects", "-C", repo, "merge-base", "--is-ancestor", head, e.SHA)
-	cmd.Env = chain.GitEnv()
-	var ee *exec.ExitError
-	return !(errors.As(cmd.Run(), &ee) && ee.ExitCode() == 1) // exit 1: not an ancestor
+	return pass == e.Pass
 }
 
 func runner(args []string, stdout, stderr io.Writer) int {
