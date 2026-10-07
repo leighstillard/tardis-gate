@@ -53,6 +53,10 @@ func TestCheckRemoteRefusesCredentials(t *testing.T) {
 		"https://x-access-token:ghs_abc@github.com/o/r": false,
 		"https://ghp_abc@github.com/o/r.git":            false,
 		"ssh://git:hunter2@example.com/o/r.git":         false,
+		"https://git.example/o/r.git?access_token=x":    false,
+		"https://github.com/o/r.git?":                   false,
+		"https://github.com/o/r.git#tok":                false,
+		"https://git.example/%zz":                       false,
 	} {
 		if err := checkRemote(url); (err == nil) != ok {
 			t.Errorf("checkRemote(%q) = %v, want ok=%v", url, err, ok)

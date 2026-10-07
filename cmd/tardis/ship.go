@@ -80,14 +80,26 @@ func branchRun(repo, remote string) (ship.Input, string, error) {
 }
 
 // checkRemote refuses a remote URL that carries credentials: the URL is
-// stored in the run's Temporal history, which every worker can read.
+// stored in the run's Temporal history, which every worker can read. A query
+// or fragment can hold a token too, and a URL that does not parse cannot be
+// checked at all.
 func checkRemote(raw string) error {
-	u, err := neturl.Parse(raw)
-	if err != nil || u.User == nil {
+	if !strings.Contains(raw, "://") {
 		return nil // scp-like (git@host:owner/repo) or a local path
 	}
+	const why = ", which would be stored in Temporal history; use a git credential helper instead"
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		return errors.New("the remote URL does not parse, so it cannot be checked for credentials" + why)
+	}
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return errors.New("the remote URL has a query string or fragment, which can carry credentials" + why)
+	}
+	if u.User == nil {
+		return nil
+	}
 	if _, hasPassword := u.User.Password(); hasPassword || u.Scheme == "http" || u.Scheme == "https" {
-		return errors.New("the remote URL carries credentials, which would be stored in Temporal history; use a git credential helper instead")
+		return errors.New("the remote URL carries credentials" + why)
 	}
 	return nil
 }

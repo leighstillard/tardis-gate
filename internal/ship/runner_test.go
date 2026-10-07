@@ -2,12 +2,15 @@ package ship
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"go.temporal.io/sdk/temporal"
 
 	"github.com/leighstillard/tardis-gate/internal/chain"
 	"github.com/leighstillard/tardis-gate/internal/executor"
@@ -140,6 +143,26 @@ func TestRunnerFollowsTheDefaultBranch(t *testing.T) {
 	run(t, "git", "--git-dir="+strings.TrimPrefix(url, "file://"), "symbolic-ref", "HEAD", "refs/heads/trunk")
 	if out, err := r.Resolve(ctx, ResolveIn{RepoURL: url, SHA: check}); err != nil || out.Base != "trunk" {
 		t.Errorf("resolve after the default branch moved: %+v, %v; want base trunk", out, err)
+	}
+}
+
+func TestOpenPRRefusesAMovedBase(t *testing.T) {
+	r, url, base, check := runnerFixture(t)
+	ctx := context.Background()
+	open := func(baseID string) error {
+		_, err := r.OpenPR(ctx, OpenPRIn{RepoURL: url, Branch: "feature", Base: "main", BaseID: baseID, Head: check})
+		return err
+	}
+	if err := open(base); err != nil {
+		t.Fatalf("open on the resolved base: %v", err)
+	}
+	w := t.TempDir()
+	run(t, "git", "-C", w, "clone", "-q", url, ".")
+	run(t, "git", "-C", w, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "main moves")
+	run(t, "git", "-C", w, "push", "-q", "origin", "main")
+	var ae *temporal.ApplicationError
+	if err := open(base); !errors.As(err, &ae) || ae.Type() != "BaseMoved" {
+		t.Errorf("open after main moved: err = %v; want BaseMoved", err)
 	}
 }
 

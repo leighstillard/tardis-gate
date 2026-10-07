@@ -79,8 +79,8 @@ func (f *fake) register(env *testsuite.TestWorkflowEnvironment) {
 		return nil
 	})
 	reg(ActOpenPR, func(_ context.Context, in OpenPRIn) (string, error) {
-		if in.Base != "main" {
-			return "", fmt.Errorf("open PR into %q, want the resolved main", in.Base)
+		if in.Base != "main" || in.BaseID != "b0" {
+			return "", fmt.Errorf("open PR into %q at %q, want the resolved main at b0", in.Base, in.BaseID)
 		}
 		f.mu.Lock()
 		f.openPRs++
@@ -209,6 +209,26 @@ func TestBranchMovedAtOpenPRTellsTheAuthor(t *testing.T) {
 	env.ExecuteWorkflow(Ship, in)
 	if !contains(f.events, "open-pr failed: the branch moved past the reviewed head; run tardis request on the new head") {
 		t.Errorf("events %v; want the author told the branch moved", f.events)
+	}
+}
+
+func TestBaseMovedAtOpenPRReviewsAgain(t *testing.T) {
+	f := &fake{gates: []string{"simplify"}, openErr: temporal.NewNonRetryableApplicationError("moved", "BaseMoved", nil)}
+	env := newEnv(t, f)
+	f.onEvent = func(e Event) {
+		if e.Kind == "base-moved" {
+			f.mu.Lock()
+			f.openErr = nil
+			f.mu.Unlock()
+		}
+	}
+	env.ExecuteWorkflow(Ship, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"author:simplify@c1", "rerun:simplify@c1+simplify", "author:simplify@c1+simplify", "rerun:simplify@c1+simplify+simplify"}
+	if !reflect.DeepEqual(f.calls, want) || f.openPRs != 2 {
+		t.Errorf("calls %v, OpenPR %d; want the gates again on the same head, then a PR", f.calls, f.openPRs)
 	}
 }
 

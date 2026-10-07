@@ -310,7 +310,8 @@ func (r *Runner) PostCheck(ctx context.Context, in CheckIn) error {
 }
 
 // OpenPR records the PR the App will open, only while the branch still points
-// at the head the gates passed on: a head pushed since has not been reviewed.
+// at the head the gates passed on and the base at the commit they were
+// resolved on: anything pushed to either since has not been reviewed.
 // ponytail: log line until the GitHub App lands; there, the check and the
 // open are two calls, and the merge (build 5) is pinned to the SHA.
 func (r *Runner) OpenPR(ctx context.Context, in OpenPRIn) (string, error) {
@@ -325,6 +326,14 @@ func (r *Runner) OpenPR(ctx context.Context, in OpenPRIn) (string, error) {
 	} else if now != in.Head {
 		return "", temporal.NewNonRetryableApplicationError(
 			in.Branch+" is at "+now+", not the reviewed "+in.Head, "BranchMoved", nil)
+	}
+	// The gates were resolved on BaseID; a base that moved since may hold a
+	// policy they never ran under.
+	if now, err := gitOut(ctx, dir, "rev-parse", "origin/"+in.Base); err != nil {
+		return "", err
+	} else if now != in.BaseID {
+		return "", temporal.NewNonRetryableApplicationError(
+			in.Base+" is at "+now+", not "+in.BaseID+", where the gates were resolved", "BaseMoved", nil)
 	}
 	fmt.Fprintf(r.Log, "open-pr %s into %s at %s\n", in.Branch, in.Base, in.Head)
 	return "local:" + in.Branch + "@" + in.Head[:min(12, len(in.Head))], nil

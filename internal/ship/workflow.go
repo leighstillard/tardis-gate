@@ -45,6 +45,9 @@ func authorOpts(ctx workflow.Context, queue string, timeout time.Duration) workf
 		ScheduleToCloseTimeout: AwaitDelivery, // the author may attach later
 		HeartbeatTimeout:       HeartbeatTimeout,
 		RetryPolicy:            retry,
+		// A cancelled review still holds the working copy until it stops;
+		// the next must not start before then.
+		WaitForCancellation: true,
 	})
 }
 
@@ -71,6 +74,7 @@ func deliveryOpts(ctx workflow.Context, queue string) workflow.Context {
 type outcome struct {
 	Tip      string // branch tip after the last check commit
 	Base     string // base branch, as resolved
+	BaseID   string // its commit when resolved
 	Gate     string // gate that stopped the pass, "" if all passed
 	Kind     string // "rejected" or "failed"
 	Reason   string
@@ -119,8 +123,14 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 			}
 			var url string
 			err := workflow.ExecuteActivity(runnerOpts(ctx, 5*time.Minute), ActOpenPR,
-				OpenPRIn{RepoURL: in.RepoURL, Branch: in.Branch, Base: res.Base, Head: res.Tip}).Get(ctx, &url)
+				OpenPRIn{RepoURL: in.RepoURL, Branch: in.Branch, Base: res.Base, BaseID: res.BaseID, Head: res.Tip}).Get(ctx, &url)
 			var ae *temporal.ApplicationError
+			if errors.As(err, &ae) && ae.Type() == "BaseMoved" {
+				// The base's policy may have changed: same head, gates again.
+				notify(ctx, authorQ, Event{Kind: "base-moved", SHA: res.Tip, Detail: "reviewing again against the new base"})
+				head = res.Tip
+				continue
+			}
 			moved := errors.As(err, &ae) && ae.Type() == "BranchMoved"
 			if err != nil && !moved {
 				notify(ctx, authorQ, Event{Kind: "failed", Gate: "open-pr", SHA: res.Tip, Detail: reason(err)})
@@ -229,7 +239,7 @@ func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
 			return stop(n, "failed", "posting the success check: "+reason(err), tip)
 		}
 	}
-	return outcome{Tip: tip, Base: res.Base}
+	return outcome{Tip: tip, Base: res.Base, BaseID: res.BaseID}
 }
 
 // reason turns an activity error into words for the author. A timeout means
