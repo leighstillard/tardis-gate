@@ -184,7 +184,7 @@ func prefixes(p string) []string {
 func CommitID(repo, rev string) (string, error) {
 	id, err := gitOut(repo, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
 	if err != nil {
-		return "", fmt.Errorf("%s is not a commit", rev)
+		return "", fmt.Errorf("%s is not a commit in %s", rev, repo)
 	}
 	return strings.TrimSpace(id), nil
 }
