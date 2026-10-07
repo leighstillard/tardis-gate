@@ -29,6 +29,31 @@ func TestLocalCancelIsAnError(t *testing.T) {
 	}
 }
 
+func TestLocalCancelKillsGrandchildren(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	// The shell backgrounds a sleep that inherits stdout, then waits on it.
+	if _, err := (Local{}).Run(ctx, Job{Argv: []string{"sh", "-c", "sleep 30 & wait"}}, nil); err == nil {
+		t.Error("cancelled job returned no error")
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Errorf("Run returned after %v; the grandchild kept it waiting", d)
+	}
+}
+
+func TestLocalOrphanHoldingPipeDoesNotHang(t *testing.T) {
+	start := time.Now()
+	// The shell exits at once, leaving a background sleep holding stdout open.
+	res, err := Local{}.Run(context.Background(), Job{Argv: []string{"sh", "-c", "sleep 30 & echo done"}}, nil)
+	if d := time.Since(start); d > 10*time.Second {
+		t.Fatalf("Run returned after %v, want about WaitDelay", d)
+	}
+	if err == nil && !strings.Contains(res.Output, "done") {
+		t.Errorf("res = %+v", res)
+	}
+}
+
 func TestLocalMissingBinary(t *testing.T) {
 	if _, err := (Local{}).Run(context.Background(), Job{Argv: []string{"tardis-no-such-binary"}}, nil); err == nil {
 		t.Error("missing binary returned no error")

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"syscall"
+	"time"
 )
 
 // Job is one command to run for a gate.
@@ -39,6 +41,12 @@ func (Local) Run(ctx context.Context, job Job, _ func(string)) (Result, error) {
 	cmd := exec.CommandContext(ctx, job.Argv[0], job.Argv[1:]...)
 	cmd.Dir = job.Dir
 	cmd.Env = append(os.Environ(), job.Env...)
+	// Run in its own process group so cancelling kills grandchildren too, and
+	// stop waiting on output a few seconds after the process itself is gone:
+	// an orphaned grandchild holding the pipe must not hang the activity.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 5 * time.Second
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	err := cmd.Run()
