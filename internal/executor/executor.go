@@ -16,6 +16,7 @@ type Job struct {
 	Argv   []string
 	Dir    string
 	Env    []string // added to the current environment
+	Clean  bool     // Env replaces the environment instead (no inherited secrets)
 	Resume string   // heartbeat detail from a previous attempt, "" on the first
 }
 
@@ -41,6 +42,9 @@ func (Local) Run(ctx context.Context, job Job, _ func(string)) (Result, error) {
 	cmd := exec.CommandContext(ctx, job.Argv[0], job.Argv[1:]...)
 	cmd.Dir = job.Dir
 	cmd.Env = append(os.Environ(), job.Env...)
+	if job.Clean {
+		cmd.Env = job.Env
+	}
 	// Run in its own process group so cancelling kills grandchildren too, and
 	// stop waiting on output a few seconds after the process itself is gone:
 	// an orphaned grandchild holding the pipe must not hang the activity.

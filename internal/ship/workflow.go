@@ -109,20 +109,26 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 			var url string
 			err := workflow.ExecuteActivity(runnerOpts(ctx, 5*time.Minute), ActOpenPR,
 				OpenPRIn{RepoURL: in.RepoURL, Branch: in.Branch, Base: in.Base, Head: res.Tip}).Get(ctx, &url)
-			if err != nil {
+			var ae *temporal.ApplicationError
+			moved := errors.As(err, &ae) && ae.Type() == "BranchMoved"
+			if err != nil && !moved {
 				notify(ctx, authorQ, Event{Kind: "failed", Gate: "open-pr", SHA: res.Tip, Detail: reason(err)})
 				return "", err
 			}
-			notify(ctx, authorQ, Event{Kind: "pr-created", SHA: res.Tip, Detail: url})
-			notify(ctx, authorQ, Event{Kind: "completed", SHA: res.Tip})
-			// Last look, with nothing blocking before the return: Temporal does
-			// not let a run complete past a signal that arrived meanwhile, so a
-			// head requested at any point up to here starts the run again.
-			if newer := latest(heads, ""); newer != "" {
-				head = newer
-				continue
+			if !moved {
+				notify(ctx, authorQ, Event{Kind: "pr-created", SHA: res.Tip, Detail: url})
+				notify(ctx, authorQ, Event{Kind: "completed", SHA: res.Tip})
+				// Last look, with nothing blocking before the return: Temporal
+				// does not let a run complete past a signal that arrived
+				// meanwhile, so a head requested up to here starts it again.
+				if newer := latest(heads, ""); newer != "" {
+					head = newer
+					continue
+				}
+				return url, nil
 			}
-			return url, nil
+			// The branch moved past the reviewed head, so no PR for it; the
+			// request that pushed the new head signals it, awaited below.
 		}
 
 		// Rejected or failed: wait for the author to push a fix and ask again.

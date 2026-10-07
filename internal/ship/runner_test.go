@@ -36,8 +36,9 @@ func runnerFixture(t *testing.T) (*Runner, string, string, string) {
 		t.Fatal(err)
 	}
 	git("push", "-q", "origin", "feature")
-	r := &Runner{WorkDir: t.TempDir(), RerunCmd: []string{"true"}, Exec: executor.Local{}, Log: io.Discard}
-	return r, git("remote", "get-url", "origin"), git("rev-parse", "main"), check
+	url := git("remote", "get-url", "origin")
+	r := &Runner{Repos: map[string]bool{url: true}, WorkDir: t.TempDir(), RerunCmd: []string{"true"}, Exec: executor.Local{}, Log: io.Discard}
+	return r, url, git("rev-parse", "main"), check
 }
 
 func TestRunnerPostsSuccessOnlyForItsOwnPass(t *testing.T) {

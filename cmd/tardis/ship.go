@@ -268,10 +268,19 @@ func runner(args []string, stdout, stderr io.Writer) int {
 	workDir := fs.String("work-dir", filepath.Join(home, "tardis", "runner"), "where repository clones live")
 	rerun := fs.String("rerun-cmd", "", "shell command run per gate; exit 0 passes, 1 rejects (stand-in until provider re-runs). "+
 		"It runs in a clean checkout of the base, never the branch's code: read the change with git through $TARDIS_SHA and $TARDIS_BASE")
-	if _, code, ok := parse(fs, "runner [--work-dir <dir>] [--rerun-cmd <sh>]", args, 0, stderr); !ok {
+	repos := map[string]bool{}
+	fs.Func("repo", "repository URL this runner serves, exactly as authors' remotes name it (repeatable, at least one)", func(u string) error {
+		repos[u] = true
+		return nil
+	})
+	if _, code, ok := parse(fs, "runner --repo <url>... [--work-dir <dir>] [--rerun-cmd <sh>]", args, 0, stderr); !ok {
 		return code
 	}
-	r := &ship.Runner{WorkDir: *workDir, Exec: executor.Local{}, Log: stdout}
+	if len(repos) == 0 {
+		fmt.Fprintln(stderr, "runner: --repo is required: name each repository URL this runner serves")
+		return 2
+	}
+	r := &ship.Runner{Repos: repos, WorkDir: *workDir, Exec: executor.Local{}, Log: stdout}
 	if *rerun != "" {
 		r.RerunCmd = []string{"sh", "-c", *rerun}
 	}

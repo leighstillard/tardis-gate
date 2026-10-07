@@ -140,8 +140,23 @@ func (a *Author) review(ctx context.Context, in AuthorReviewIn, base string) err
 		return temporal.NewNonRetryableApplicationError(
 			"branch moved during the review (HEAD is now "+now+"); run tardis request again", "Malformed", nil)
 	}
-	_, err = chain.Commit(a.Dir, in.Gate, string(summary), a.Tool)
-	return err
+	sha, err := chain.Commit(a.Dir, in.Gate, string(summary), a.Tool)
+	if err != nil {
+		return err
+	}
+	// The review covered in.Tip. If a commit slipped in between the check above
+	// and the commit, take this check back off it (only if nothing has moved
+	// again) rather than let it vouch for unreviewed code.
+	if parent, err := gitOut(ctx, a.Dir, "rev-parse", sha+"^"); err != nil {
+		return err
+	} else if parent != in.Tip {
+		if ref, err := gitOut(ctx, a.Dir, "symbolic-ref", "-q", "HEAD"); err == nil {
+			_, _ = gitOut(ctx, a.Dir, "update-ref", ref, parent, sha)
+		}
+		return temporal.NewNonRetryableApplicationError(
+			"branch moved during the review (a commit landed on "+in.Tip+"); run tardis request again", "Malformed", nil)
+	}
+	return nil
 }
 
 // clean refuses a working tree with uncommitted or untracked changes: the

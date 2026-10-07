@@ -25,8 +25,9 @@ import (
 // for real; the independent re-run is an operator-configured command, and
 // check runs and PRs are written to the log until the GitHub App lands.
 type Runner struct {
-	WorkDir  string   // clones live here, one per repository URL
-	RerunCmd []string // run per gate; exit 0 passes, 1 rejects; empty rejects everything
+	Repos    map[string]bool // the repository URLs this runner serves; any other is refused
+	WorkDir  string          // clones live here, one per repository URL
+	RerunCmd []string        // run per gate; exit 0 passes, 1 rejects; empty rejects everything
 	Exec     executor.Executor
 	Log      io.Writer
 
@@ -94,6 +95,12 @@ func (r *Runner) lock(repoURL string) (unlock func()) {
 // sync clones the repository once and fetches its branches; reads go through
 // commit IDs, never the working tree.
 func (r *Runner) sync(ctx context.Context, repoURL string) (string, error) {
+	// The URL comes from a workflow anyone with Temporal access can start;
+	// clone only what the operator listed.
+	if !r.Repos[repoURL] {
+		return "", temporal.NewNonRetryableApplicationError(
+			"repository "+repoURL+" is not served by this runner (tardis runner --repo)", "Malformed", nil)
+	}
 	sum := sha256.Sum256([]byte(repoURL))
 	dir := filepath.Join(r.WorkDir, hex.EncodeToString(sum[:8]))
 	if _, err := os.Stat(filepath.Join(dir, ".git")); errors.Is(err, os.ErrNotExist) {
@@ -186,7 +193,9 @@ func (r *Runner) Rerun(ctx context.Context, in RerunIn) (Verdict, error) {
 	res, err := r.Exec.Run(ctx, executor.Job{
 		Argv: r.RerunCmd,
 		Dir:  dir,
-		Env:  []string{"TARDIS_GATE=" + in.Gate, "TARDIS_SHA=" + in.Tip, "TARDIS_BASE=" + in.BaseID},
+		Env: []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"),
+			"TARDIS_GATE=" + in.Gate, "TARDIS_SHA=" + in.Tip, "TARDIS_BASE=" + in.BaseID},
+		Clean: true, // none of the runner's own credentials
 	}, func(string) {})
 	if err != nil {
 		return Verdict{}, err
@@ -246,8 +255,23 @@ func (r *Runner) PostCheck(ctx context.Context, in CheckIn) error {
 	return nil
 }
 
-// OpenPR records the PR the App will open. ponytail: log line until the GitHub App lands.
-func (r *Runner) OpenPR(_ context.Context, in OpenPRIn) (string, error) {
+// OpenPR records the PR the App will open, only while the branch still points
+// at the head the gates passed on: a head pushed since has not been reviewed.
+// ponytail: log line until the GitHub App lands; there, the check and the
+// open are two calls, and the merge (build 5) is pinned to the SHA.
+func (r *Runner) OpenPR(ctx context.Context, in OpenPRIn) (string, error) {
+	defer heartbeat(ctx)()
+	defer r.lock(in.RepoURL)()
+	dir, err := r.sync(ctx, in.RepoURL)
+	if err != nil {
+		return "", err
+	}
+	if now, err := gitOut(ctx, dir, "rev-parse", "origin/"+in.Branch); err != nil {
+		return "", err
+	} else if now != in.Head {
+		return "", temporal.NewNonRetryableApplicationError(
+			in.Branch+" is at "+now+", not the reviewed "+in.Head, "BranchMoved", nil)
+	}
 	fmt.Fprintf(r.Log, "open-pr %s into %s at %s\n", in.Branch, in.Base, in.Head)
 	return "local:" + in.Branch + "@" + in.Head[:min(12, len(in.Head))], nil
 }
