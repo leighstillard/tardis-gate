@@ -8,8 +8,9 @@ It is a framework rather than a fixed policy. It ships four reference reviews, a
 repository that enrols chooses which to run and can add its own. It runs on Temporal Cloud
 or on a local `temporal server start-dev`.
 
-**Status:** builds 1 and 2 of 5 are in: check-commit evidence (released as v0.1.0) and
-the gate manifest. The rest is specified below and being built in public.
+**Status:** builds 1 to 3 of 5 are in: check-commit evidence (released as v0.1.0), the
+gate manifest and the ship workflow on Temporal. The runner's independent re-run and the
+PR gate are specified below and being built in public.
 
 ## The problem
 
@@ -138,6 +139,9 @@ lives. Nothing about a particular repository is built into the framework.
 - **One working copy per branch.** A run hands its author steps to whichever `tardis`
   is attached to that branch. If two clones of the same branch attach at once, either may
   get a step; the wrong one fails it and the author has to ask again.
+- **One runner per Temporal namespace.** A runner records the re-runs it passed in its
+  own work directory, and runners share one task queue. A second runner could pick up a
+  run's later steps without the first one's record and refuse them.
 - **One tardis version per Temporal namespace.** Each attached `tardis` also runs
   workflow tasks for every run in the namespace. During an upgrade, an older binary can
   pick up a run and drive it with older logic. Upgrade everyone together, or give each

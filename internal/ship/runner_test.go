@@ -16,24 +16,12 @@ import (
 	"github.com/leighstillard/tardis-gate/internal/executor"
 )
 
-// runnerFixture is a bare origin whose main is enrolled and whose feature
-// branch has one code commit and a valid simplify check on top. It returns
+// runnerFixture is authorRepo's origin with a valid simplify check on top of
+// the feature branch. It returns
 // the runner, the origin URL, main's commit and the check commit.
 func runnerFixture(t *testing.T) (*Runner, string, string, string) {
 	t.Helper()
 	a, git := authorRepo(t)
-	git("checkout", "-q", "main")
-	if err := os.MkdirAll(filepath.Join(a.Dir, ".tardis"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(a.Dir, ".tardis", "config.yml"), []byte("gates:\n  - name: simplify\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	git("add", "-A")
-	git("commit", "-q", "-m", "enrol")
-	git("push", "-q", "origin", "main")
-	git("checkout", "-q", "feature")
-	git("rebase", "-q", "main")
 	check, err := chain.Commit(a.Dir, "simplify", "ok", a.Tool)
 	if err != nil {
 		t.Fatal(err)
@@ -174,6 +162,22 @@ func TestOpenPRRefusesAMovedBase(t *testing.T) {
 	now := strings.TrimSpace(run(t, "git", "-C", w, "rev-parse", "HEAD"))
 	if err := open(now); !errors.As(err, &ae) || ae.Type() != "Rejected" {
 		t.Errorf("open on the new base with only an old-base pass: err = %v; want Rejected", err)
+	}
+}
+
+func TestRunnerRefusesAHeadThatWouldStrandTheBase(t *testing.T) {
+	r, url, _, _ := runnerFixture(t)
+	w := t.TempDir()
+	g := func(args ...string) string {
+		return strings.TrimSpace(run(t, "git", append([]string{"-C", w, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...))
+	}
+	g("clone", "-q", url, ".")
+	g("checkout", "-q", "feature")
+	g("rm", "-q", ".tardis/config.yml")
+	g("commit", "-q", "-m", "unenrol")
+	g("push", "-q", "origin", "feature")
+	if _, err := r.Resolve(context.Background(), ResolveIn{RepoURL: url, SHA: g("rev-parse", "HEAD")}); err == nil || !strings.Contains(err.Error(), "not enrolled") {
+		t.Errorf("resolve on a head that removes the config: err = %v", err)
 	}
 }
 

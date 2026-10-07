@@ -201,11 +201,19 @@ func (r *Runner) Resolve(ctx context.Context, in ResolveIn) (ResolveOut, error) 
 	return out, nil
 }
 
-// gatesFor lists the gates that apply to sha under baseID's manifest.
+// gatesFor lists the gates that apply to sha under baseID's manifest. The
+// policy merging sha would leave must load too, or the merge would strand
+// the base with a policy it cannot read.
 func gatesFor(dir, base, baseID, sha string) ([]manifest.Gate, error) {
 	m, err := manifest.LoadRev(dir, baseID)
 	if err != nil {
 		return nil, fmt.Errorf("manifest on %s: %w", base, err)
+	}
+	if err := manifest.CheckMerge(dir, baseID, sha); err != nil {
+		if ge := (*manifest.GitError)(nil); errors.As(err, &ge) {
+			return nil, err
+		}
+		return nil, temporal.NewNonRetryableApplicationError(fmt.Sprintf("merging %.12s into %s: %v", sha, base, err), "Malformed", nil)
 	}
 	changed, err := manifest.Changed(dir, baseID, sha)
 	if err != nil {

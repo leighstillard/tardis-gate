@@ -50,15 +50,11 @@ func (a *Author) AuthorReview(ctx context.Context, in AuthorReviewIn) (string, e
 				"Malformed", nil)
 		}
 	}
-	// The base commit the runner pinned for this pass: fetch the base branch
-	// and make sure that commit is here, so both sides read the same policy.
+	// The base commit the runner pinned for this pass. The gate's command is
+	// read from it and run here, so check it ourselves first.
 	base := in.BaseID
-	if _, err := gitOut(ctx, a.Dir, "fetch", "-q", a.Remote, "+refs/heads/"+in.Base+":refs/remotes/"+a.Remote+"/"+in.Base); err != nil {
+	if err := a.checkBase(ctx, in.Base, base); err != nil {
 		return "", err
-	}
-	if _, err := gitOut(ctx, a.Dir, "cat-file", "-e", base+"^{commit}"); err != nil {
-		return "", temporal.NewNonRetryableApplicationError(
-			"base commit "+base+" is not on "+a.Remote+"/"+in.Base+" here", "Malformed", nil)
 	}
 	if err := a.clean(ctx); err != nil {
 		return "", err
@@ -76,6 +72,40 @@ func (a *Author) AuthorReview(ctx context.Context, in AuthorReviewIn) (string, e
 		return "", err
 	}
 	return gitOut(ctx, a.Dir, "rev-parse", "HEAD")
+}
+
+// checkBase makes sure base is the branch the remote's default branch names
+// as base_branch, and baseID a commit it has held. The workflow names both,
+// and anyone who can start one could otherwise point this machine at gate
+// commands from any commit.
+func (a *Author) checkBase(ctx context.Context, base, baseID string) error {
+	malformed := func(msg string) error { return temporal.NewNonRetryableApplicationError(msg, "Malformed", nil) }
+	out, err := gitOut(ctx, a.Dir, "ls-remote", "--symref", a.Remote, "HEAD")
+	if err != nil {
+		return err
+	}
+	line, _, _ := strings.Cut(out, "\n")
+	ref, _, _ := strings.Cut(strings.TrimPrefix(line, "ref: "), "\t")
+	def, ok := strings.CutPrefix(ref, "refs/heads/")
+	if !strings.HasPrefix(line, "ref: ") || !ok {
+		return malformed("cannot tell " + a.Remote + "'s default branch")
+	}
+	for _, b := range []string{def, base} {
+		if _, err := gitOut(ctx, a.Dir, "fetch", "-q", a.Remote, "+refs/heads/"+b+":refs/remotes/"+a.Remote+"/"+b); err != nil {
+			return err
+		}
+	}
+	m, err := manifest.LoadRev(a.Dir, "refs/remotes/"+a.Remote+"/"+def)
+	if err != nil {
+		return fmt.Errorf("manifest on %s/%s: %w", a.Remote, def, err)
+	}
+	if base != m.BaseBranch {
+		return malformed(fmt.Sprintf("base %q is not %s's base branch %q", base, a.Remote, m.BaseBranch))
+	}
+	if _, err := gitOut(ctx, a.Dir, "merge-base", "--is-ancestor", baseID, "refs/remotes/"+a.Remote+"/"+base); err != nil {
+		return malformed("base commit " + baseID + " was never on " + a.Remote + "/" + base)
+	}
+	return nil
 }
 
 func (a *Author) review(ctx context.Context, in AuthorReviewIn, base string) error {

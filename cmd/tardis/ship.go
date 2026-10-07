@@ -303,7 +303,7 @@ func runner(args []string, stdout, stderr io.Writer) int {
 		"It runs in a clean checkout of the base, never the branch's code: read the change with git through $TARDIS_SHA and $TARDIS_BASE")
 	repos := map[string]bool{}
 	fs.Func("repo", "repository URL this runner serves, exactly as authors' remotes name it (repeatable, at least one). "+
-		"Runners share one task queue per Temporal namespace, so every runner in a namespace must serve the same set", func(u string) error {
+		"Run one runner per Temporal namespace: runners share one task queue, and each keeps the record of re-runs it passed in its own --work-dir", func(u string) error {
 		repos[u] = true
 		return nil
 	})

@@ -11,8 +11,8 @@ import (
 	"github.com/leighstillard/tardis-gate/internal/chain"
 )
 
-// authorRepo is a clone of a bare origin with main pushed and feature checked
-// out one code commit ahead.
+// authorRepo is a clone of a bare origin with main, enrolled with one gate
+// (simplify), pushed and feature checked out one code commit ahead.
 func authorRepo(t *testing.T) (*Author, func(...string) string) {
 	t.Helper()
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
@@ -35,7 +35,14 @@ func authorRepo(t *testing.T) (*Author, func(...string) string) {
 	}
 	git("init", "-q", "-b", "main")
 	git("remote", "add", "origin", origin)
-	git("commit", "-q", "--allow-empty", "-m", "base")
+	if err := os.MkdirAll(filepath.Join(dir, ".tardis"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".tardis", "config.yml"), []byte("gates:\n  - name: simplify\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "-A")
+	git("commit", "-q", "-m", "base, enrolled")
 	git("push", "-q", "origin", "main")
 	git("checkout", "-q", "-b", "feature")
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a"), 0o644); err != nil {
@@ -50,6 +57,22 @@ func authorRepo(t *testing.T) (*Author, func(...string) string) {
 func reviewIn(git func(...string) string, gate string) AuthorReviewIn {
 	tip := git("rev-parse", "HEAD")
 	return AuthorReviewIn{Gate: gate, Base: "main", BaseID: git("rev-parse", "main"), Code: tip, Tip: tip}
+}
+
+func TestAuthorReviewRunsNoPolicyFromAnUncheckedBase(t *testing.T) {
+	// The workflow names the base; it must not be able to point this machine
+	// at gate commands from just any commit or branch.
+	a, git := authorRepo(t)
+	git("push", "-q", "origin", "feature")
+	for _, in := range []AuthorReviewIn{
+		{Gate: "simplify", Base: "feature", BaseID: git("rev-parse", "feature")},
+		{Gate: "simplify", Base: "main", BaseID: git("rev-parse", "feature")},
+	} {
+		in.Code, in.Tip = git("rev-parse", "HEAD"), git("rev-parse", "HEAD")
+		if _, err := a.AuthorReview(context.Background(), in); err == nil || !strings.Contains(err.Error(), "base") {
+			t.Errorf("base %s at %.7s: err = %v, want a refusal", in.Base, in.BaseID, err)
+		}
+	}
 }
 
 func TestAuthorReviewRetryResumesFromItsOwnCheck(t *testing.T) {
