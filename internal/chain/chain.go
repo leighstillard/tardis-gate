@@ -43,9 +43,9 @@ func (c commit) isCheck() bool {
 // A later check for the same gate replaces an earlier one; any commit that
 // changes the tree supersedes every valid check before it.
 func Verify(dir, base, head string, gates []string) (map[string]string, error) {
-	baseSHA, err := git(dir, "rev-parse", "--verify", base+"^{commit}")
+	baseSHA, err := git(dir, "rev-parse", "--verify", "--quiet", base+"^{commit}")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("base %q is not a commit in %s", base, dir)
 	}
 	commits, err := log(dir, "--reverse", "--topo-order", base+".."+head)
 	if err != nil {
