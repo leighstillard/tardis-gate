@@ -73,6 +73,7 @@ const (
 	maxGates = 64
 	// Each path element is a git call when loading from a commit.
 	maxDepth = 8
+	maxGlobs = 32 // applies_when patterns per gate
 )
 
 var errTooLarge = fmt.Errorf("file is larger than %d bytes", maxFile)
@@ -409,6 +410,10 @@ func loadGate(read readFunc, ref GateRef) (Gate, error) {
 	}
 	if g.MustDifferFrom != "" && g.MustDifferFrom != "author" {
 		errs = append(errs, fmt.Errorf("must_differ_from is %q; only \"author\" is supported", g.MustDifferFrom))
+	}
+	if len(g.AppliesWhen) > maxGlobs { // before compiling any
+		errs = append(errs, fmt.Errorf("applies_when: %d patterns; at most %d", len(g.AppliesWhen), maxGlobs))
+		g.AppliesWhen = nil
 	}
 	for _, glob := range g.AppliesWhen {
 		re, err := globRegexp(glob)

@@ -439,6 +439,12 @@ func TestReservedGateNamesAndBackslashes(t *testing.T) {
 	}
 }
 
+func TestAppliesWhenIsCapped(t *testing.T) {
+	globs := strings.Repeat(`"a/**",`, maxGlobs+1)
+	root := copySample(t, map[string]string{".tardis/config.yml": "gates:\n  - name: simplify\n    applies_when: [" + strings.TrimSuffix(globs, ",") + "]\n"})
+	wantErr(t, root, fmt.Sprintf("applies_when: %d patterns; at most %d", maxGlobs+1, maxGlobs))
+}
+
 func TestGateDirMustBeBelowTheRoot(t *testing.T) {
 	root := copySample(t, map[string]string{".tardis/config.yml": "gates:\n  - name: lint\n    dir: .\n", "gate.yml": "name: lint\nrun: [make]\ntimeout: 1m\n"})
 	wantErr(t, root, `gate "lint": dir: must be a directory below the repository root`)
