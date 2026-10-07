@@ -62,18 +62,22 @@ func Commit(dir, gate, summary, tool string) (string, error) {
 		"-m", SubjectPrefix+gate, "-m", summary, "-m", trailers); err != nil {
 		return "", err
 	}
-	head, err := log(dir, "-1", "HEAD")
+	head, err := git(dir, "rev-parse", "HEAD")
 	if err != nil {
 		return "", err
 	}
-	if s := judge(head[0], gate, of); s != Valid {
+	body, block, err := message(dir, head)
+	if err != nil {
+		return "", err
+	}
+	if s := judge(body, block, gate, of); s != Valid {
 		// Only our own empty commit is undone; the index and work tree stay as they were.
 		if _, rerr := git(dir, "reset", "-q", "--soft", "HEAD^"); rerr != nil {
 			return "", fmt.Errorf("check commit came out %s and could not be undone: %v", s, rerr)
 		}
 		return "", fmt.Errorf("summary makes the check commit %s; rewrite it and retry", s)
 	}
-	return head[0].sha, nil
+	return head, nil
 }
 
 // maxCheckRun bounds the walk back over stacked check commits.
@@ -83,7 +87,7 @@ const maxCheckRun = 500
 // lastCode returns the nearest first-parent ancestor of HEAD (HEAD included)
 // that is not an empty, single-parent check attempt.
 func lastCode(dir string) (string, error) {
-	commits, err := log(dir, "--first-parent", fmt.Sprintf("--max-count=%d", maxCheckRun+1), "HEAD")
+	commits, err := history(dir, "--first-parent", fmt.Sprintf("--max-count=%d", maxCheckRun+1), "HEAD")
 	if err != nil {
 		return "", err
 	}

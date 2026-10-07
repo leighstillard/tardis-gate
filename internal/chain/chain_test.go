@@ -224,6 +224,27 @@ func TestForgedSchema(t *testing.T) {
 	}
 }
 
+func TestMessageBytesCannotForgeStructure(t *testing.T) {
+	// Q (tree T) -> P (adds a file) -> B (removes it, back to tree T). B's
+	// message carries control bytes and a fake record claiming P has tree T,
+	// trying to make a later check of P look like it covers B.
+	r := newRepo(t)
+	r.branch()
+	r.code("Q")
+	p := r.code("P")
+	pTree := r.git("rev-parse", p+"^{tree}")
+	r.git("rm", "-q", fmt.Sprintf("f%d.txt", r.n))
+	tTree := r.git("write-tree")
+	inject := "revert P\n\n\x1e" + p + "\x1f" + tTree + "\x1f\x1fship-check: x\x1f\x1f\x1e\x00" + pTree
+	r.git("commit", "-q", "--cleanup=verbatim", "-m", strings.ReplaceAll(inject, "\x00", ""))
+	b := r.git("rev-parse", "HEAD")
+
+	r.check("simplify", p, "claims P, which B changed after")
+	want(t, r.verify("simplify"), "simplify", broken("of-mismatch"))
+	r.check("simplify", b, "claims B")
+	want(t, r.verify("simplify"), "simplify", Valid)
+}
+
 func TestMergeCannotBeACheck(t *testing.T) {
 	// Merge M has first parent P and second parent Q, keeps P's tree ("ours"),
 	// and claims to have reviewed Q.

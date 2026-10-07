@@ -26,13 +26,12 @@ const (
 
 func broken(reason string) string { return "broken(" + reason + ")" }
 
-// commit is one entry of `git log`.
+// commit is one entry of `git log`. Message text is fetched separately, per
+// commit, so nothing in a message can be mistaken for structure.
 type commit struct {
 	sha, tree string
 	parents   []string
 	subject   string
-	body      string // %b: everything after the subject, trailer block included
-	trailers  string // %(trailers): git's raw trailer block, non-trailer lines included
 }
 
 // checkGate returns the gate named by a check-commit subject.
@@ -58,7 +57,7 @@ func Verify(dir, base, head string, gates []string) (map[string]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("base %q and head %q share no history", base, head)
 	}
-	commits, err := log(dir, "--reverse", "--topo-order", mb+".."+head)
+	commits, err := history(dir, "--reverse", "--topo-order", mb+".."+head)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +77,11 @@ func Verify(dir, base, head string, gates []string) (map[string]string, error) {
 			} else if !empty {
 				state[gate] = broken("not-empty")
 			} else {
-				state[gate] = judge(c, gate, lastCode)
+				body, trailers, err := message(dir, c.sha)
+				if err != nil {
+					return nil, err
+				}
+				state[gate] = judge(body, trailers, gate, lastCode)
 				continue
 			}
 		}
@@ -102,9 +105,10 @@ func Verify(dir, base, head string, gates []string) (map[string]string, error) {
 	return out, nil
 }
 
-// judge checks an empty, single-parent check commit against the schema.
-func judge(c commit, gate, lastCode string) string {
-	t, reason := parseTrailers(c.trailers)
+// judge checks an empty, single-parent check commit's message against the
+// schema. body is %b and trailers is git's raw %(trailers) block.
+func judge(body, trailers, gate, lastCode string) string {
+	t, reason := parseTrailers(trailers)
 	switch {
 	case reason != "":
 		return broken(reason)
@@ -117,7 +121,7 @@ func judge(c commit, gate, lastCode string) string {
 	case t[TrailerOf] != lastCode:
 		return broken("of-mismatch")
 	}
-	n, ok := summaryLines(c.body, c.trailers)
+	n, ok := summaryLines(body, trailers)
 	switch {
 	case !ok:
 		return broken("unexpected-trailers")
@@ -199,38 +203,86 @@ func isEmpty(dir string, c commit, trees map[string]string) (bool, error) {
 	return pt == c.tree, nil
 }
 
-// Field and record separators that cannot appear in commit metadata we read.
-const (
-	fs = "\x1f"
-	rs = "\x1e"
-)
-
-const logFormat = "%H%x1f%T%x1f%P%x1f%s%x1f%b%x1f%(trailers)%x1e"
-
-func log(dir string, args ...string) ([]commit, error) {
-	out, err := git(dir, append([]string{"log", "--format=" + logFormat}, args...)...)
+// history lists commits for a `git log` range. Structure (commit, tree,
+// parents) comes from output that holds only object IDs, one commit per line.
+// Subjects come from a second, NUL-separated listing that must match the first
+// commit for commit; git refuses NUL in messages, so a mismatch means a forged
+// object and fails closed.
+func history(dir string, args ...string) ([]commit, error) {
+	out, err := gitRaw(dir, append([]string{"log", "--format=%H %T %P"}, args...)...)
 	if err != nil {
 		return nil, err
 	}
 	var commits []commit
-	for _, rec := range strings.Split(out, rs) {
-		rec = strings.TrimLeft(rec, "\n")
-		if rec == "" {
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if line == "" {
 			continue
 		}
-		f := strings.Split(rec, fs)
-		if len(f) != 6 {
-			return nil, fmt.Errorf("chain: unexpected git log record with %d fields", len(f))
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			return nil, fmt.Errorf("chain: malformed git log line %q", line)
 		}
-		commits = append(commits, commit{
-			sha: f[0], tree: f[1], parents: strings.Fields(f[2]),
-			subject: f[3], body: f[4], trailers: f[5],
-		})
+		for _, id := range f {
+			if !isOID(id) {
+				return nil, fmt.Errorf("chain: malformed object id %q in git log", id)
+			}
+		}
+		commits = append(commits, commit{sha: f[0], tree: f[1], parents: f[2:]})
+	}
+
+	out, err = gitRaw(dir, append([]string{"log", "-z", "--format=%H %s"}, args...)...)
+	if err != nil {
+		return nil, err
+	}
+	recs := strings.Split(strings.TrimRight(out, "\x00"), "\x00")
+	if out == "" {
+		recs = nil
+	}
+	if len(recs) != len(commits) {
+		return nil, fmt.Errorf("chain: %d subjects for %d commits; refusing a history that does not parse cleanly", len(recs), len(commits))
+	}
+	for i, rec := range recs {
+		sha, subject, _ := strings.Cut(rec, " ")
+		if sha != commits[i].sha {
+			return nil, fmt.Errorf("chain: subject listing out of step at %s; refusing", commits[i].sha)
+		}
+		commits[i].subject = subject
 	}
 	return commits, nil
 }
 
+// message returns one commit's body (%b) and raw trailer block (%(trailers)),
+// each from its own git call so neither can be confused with the other.
+func message(dir, sha string) (body, trailers string, err error) {
+	if body, err = gitRaw(dir, "log", "-1", "--format=%b", sha); err != nil {
+		return "", "", err
+	}
+	if trailers, err = gitRaw(dir, "log", "-1", "--format=%(trailers)", sha); err != nil {
+		return "", "", err
+	}
+	return body, trailers, nil
+}
+
+// isOID reports whether s is a full SHA-1 or SHA-256 object ID in hex.
+func isOID(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func git(dir string, args ...string) (string, error) {
+	out, err := gitRaw(dir, args...)
+	return strings.TrimSpace(out), err
+}
+
+// gitRaw returns git's stdout untouched.
+func gitRaw(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -241,5 +293,5 @@ func git(dir string, args ...string) (string, error) {
 		}
 		return "", errors.New("git " + args[0] + ": " + msg)
 	}
-	return strings.TrimSpace(stdout.String()), nil
+	return stdout.String(), nil
 }

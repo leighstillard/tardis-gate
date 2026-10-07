@@ -34,7 +34,7 @@ jobs:
           mkdir dist
           for target in linux/amd64 linux/arm64 darwin/arm64; do
             GOOS=${target%/*} GOARCH=${target#*/} CGO_ENABLED=0 \
-              go build -trimpath -ldflags "-s -w" \
+              go build -trimpath -ldflags "-s -w -X main.releaseVersion=$GITHUB_REF_NAME" \
               -o "dist/tardis_${target%/*}_${target#*/}" ./cmd/tardis
           done
           got=$(dist/tardis_linux_amd64 version)

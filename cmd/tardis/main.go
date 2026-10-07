@@ -126,7 +126,13 @@ func chainVerify(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// releaseVersion is stamped by the release workflow with -ldflags -X.
+var releaseVersion string
+
 func version() string {
+	if releaseVersion != "" {
+		return releaseVersion
+	}
 	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" {
 		return bi.Main.Version
 	}
