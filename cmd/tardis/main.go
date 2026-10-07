@@ -11,11 +11,14 @@ import (
 	"strings"
 
 	"github.com/leighstillard/tardis-gate/internal/chain"
+	"github.com/leighstillard/tardis-gate/internal/manifest"
 )
 
 const usage = `usage:
   tardis check commit <gate> --summary-file <file> --tool <vendor/tool/model> [--repo <dir>]
   tardis chain verify <base> <head> --gates <a,b,c> [--repo <dir>]
+  tardis manifest lint [--repo <dir>]
+  tardis manifest resolve <base> <head> [--repo <dir>]
   tardis version
 `
 
@@ -29,6 +32,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return checkCommit(args[2:], stdout, stderr)
 	case cmd == "chain verify":
 		return chainVerify(args[2:], stdout, stderr)
+	case cmd == "manifest lint":
+		return manifestLint(args[2:], stdout, stderr)
+	case cmd == "manifest resolve":
+		return manifestResolve(args[2:], stdout, stderr)
 	case len(args) == 1 && args[0] == "version":
 		fmt.Fprintln(stdout, version())
 		return 0
@@ -99,16 +106,23 @@ func checkCommit(args []string, stdout, stderr io.Writer) int {
 
 func chainVerify(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("chain verify", flag.ContinueOnError)
-	gates := fs.String("gates", "", "comma-separated gates that must be valid")
+	gates := fs.String("gates", "", "gates that must be valid: a,b,c or the JSON array from manifest resolve")
 	repo := fs.String("repo", ".", "repository directory")
 	pos, code, ok := parse(fs, "chain verify <base> <head> --gates <a,b,c>", args, 2, stderr)
 	if !ok {
 		return code
 	}
 	var list []string
-	for _, g := range strings.Split(*gates, ",") {
-		if g = strings.TrimSpace(g); g != "" {
-			list = append(list, g)
+	if v := strings.TrimSpace(*gates); strings.HasPrefix(v, "[") {
+		if err := json.Unmarshal([]byte(v), &list); err != nil {
+			fmt.Fprintln(stderr, "chain verify: --gates:", err)
+			return 2
+		}
+	} else {
+		for _, g := range strings.Split(v, ",") {
+			if g = strings.TrimSpace(g); g != "" {
+				list = append(list, g)
+			}
 		}
 	}
 	if len(list) == 0 {
@@ -129,6 +143,53 @@ func chainVerify(args []string, stdout, stderr io.Writer) int {
 	if !chain.AllValid(statuses) {
 		return 1
 	}
+	return 0
+}
+
+func manifestLint(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("manifest lint", flag.ContinueOnError)
+	repo := fs.String("repo", ".", "repository directory")
+	if _, code, ok := parse(fs, "manifest lint", args, 0, stderr); !ok {
+		return code
+	}
+	m, err := manifest.Load(*repo)
+	if err != nil {
+		for _, line := range strings.Split(err.Error(), "\n") {
+			fmt.Fprintln(stderr, "manifest lint:", line)
+		}
+		return 1
+	}
+	names := make([]string, len(m.Gates))
+	for i, g := range m.Gates {
+		names[i] = g.Name
+	}
+	fmt.Fprintf(stdout, "ok: %d gates in order: %s\n", len(names), strings.Join(names, ", "))
+	return 0
+}
+
+func manifestResolve(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("manifest resolve", flag.ContinueOnError)
+	repo := fs.String("repo", ".", "repository directory")
+	pos, code, ok := parse(fs, "manifest resolve <base> <head>", args, 2, stderr)
+	if !ok {
+		return code
+	}
+	m, err := manifest.Load(*repo)
+	if err != nil {
+		fmt.Fprintln(stderr, "manifest resolve:", strings.ReplaceAll(err.Error(), "\n", "; "))
+		return 1
+	}
+	changed, err := manifest.Changed(*repo, pos[0], pos[1])
+	if err != nil {
+		fmt.Fprintln(stderr, "manifest resolve:", err)
+		return 2
+	}
+	names := []string{}
+	for _, g := range m.Resolve(changed) {
+		names = append(names, g.Name)
+	}
+	out, _ := json.Marshal(names) // a []string always marshals
+	fmt.Fprintln(stdout, string(out))
 	return 0
 }
 

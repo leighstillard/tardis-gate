@@ -1,0 +1,6 @@
+# Remove scope creep, dead code and needless abstraction from the diff.
+name: simplify
+applies_when: []
+run: [tardis, review, simplify]
+timeout: 15m
+retry: 1

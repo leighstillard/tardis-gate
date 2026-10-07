@@ -1,0 +1,7 @@
+# Prove the change works through its real entry point, following the
+# repository's runbook (TARDIS_RUNBOOK, from verify_runbook in the config).
+name: verify
+applies_when: []
+run: [tardis, review, verify]
+timeout: 20m
+retry: 1
