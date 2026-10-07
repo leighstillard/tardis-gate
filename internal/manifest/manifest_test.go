@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -408,6 +409,17 @@ func TestGitFailuresKeepTheirType(t *testing.T) {
 			t.Errorf("%s missing: err = %v; want a GitError", tc.obj, err)
 		}
 	}
+}
+
+func TestGateCountIsCapped(t *testing.T) {
+	cfg, edits := "gates:\n", map[string]string{}
+	for i := range maxGates + 1 {
+		cfg += fmt.Sprintf("  - name: g%d\n", i)
+		edits[fmt.Sprintf(".tardis/gates/g%d/gate.yml", i)] = fmt.Sprintf("name: g%d\nrun: [make]\ntimeout: 1m\n", i)
+	}
+	edits[".tardis/config.yml"] = cfg
+	root := copySample(t, edits)
+	wantErr(t, root, fmt.Sprintf("gates: %d enabled; at most %d", maxGates+1, maxGates))
 }
 
 func TestExactNameRefusesAnotherSpelling(t *testing.T) {

@@ -68,6 +68,9 @@ type Manifest struct {
 const (
 	maxFile = 64 << 10 // config or gate.yml
 	maxGlob = 256      // one applies_when pattern
+	// ponytail: far below the 500 stacked checks chain verify looks back
+	// through, so every accepted policy can complete.
+	maxGates = 64
 )
 
 var errTooLarge = fmt.Errorf("file is larger than %d bytes", maxFile)
@@ -261,6 +264,9 @@ func load(read readFunc) (*Manifest, error) {
 	}
 	if len(m.Gates) == 0 && len(errs) == 0 {
 		errs = append(errs, errors.New("gates: no gate is enabled"))
+	}
+	if len(m.Gates) > maxGates {
+		errs = append(errs, fmt.Errorf("gates: %d enabled; at most %d", len(m.Gates), maxGates))
 	}
 
 	if cfg.VerifyRunbook != "" {
