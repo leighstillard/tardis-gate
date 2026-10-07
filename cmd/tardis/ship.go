@@ -182,26 +182,39 @@ func request(args []string, stdout, stderr io.Writer) int {
 	return attach(c, wfID, *af.repo, *af.remote, in.Branch, *af.tool, head, stdout, stderr)
 }
 
-// lockAttach makes this process the one tardis attached to the working copy,
-// so a run's events are not split between two listeners. If another live
-// process holds it, holder is that PID.
-// ponytail: check-then-write, racy only if two tardis start in the same instant.
+// lockAttach takes this working copy's attach lock, so a run's events are
+// not split between two listeners. It is an advisory lock the kernel drops
+// when the process exits, so a crash leaves nothing behind. If another
+// process holds it, holder is that process's PID (-1 if unknown).
 func lockAttach(repo string) (release func(), holder int, err error) {
 	gitDir, err := gitLine(repo, "rev-parse", "--absolute-git-dir")
 	if err != nil {
 		return nil, 0, err
 	}
-	path := filepath.Join(gitDir, "tardis-attach.pid")
-	if b, err := os.ReadFile(path); err == nil {
-		var pid int
-		if _, err := fmt.Sscan(string(b), &pid); err == nil && pid != os.Getpid() && syscall.Kill(pid, 0) == nil {
-			return nil, pid, nil
-		}
-	}
-	if err := os.WriteFile(path, []byte(fmt.Sprint(os.Getpid())), 0o600); err != nil {
+	f, err := os.OpenFile(filepath.Join(gitDir, "tardis-attach.lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
 		return nil, 0, err
 	}
-	return func() { os.Remove(path) }, 0, nil
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		defer f.Close()
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, 0, err
+		}
+		pid := -1
+		if b, err := io.ReadAll(f); err == nil {
+			fmt.Sscan(string(b), &pid)
+		}
+		return nil, pid, nil
+	}
+	if err := f.Truncate(0); err != nil {
+		f.Close()
+		return nil, 0, err
+	}
+	if _, err := f.WriteAt([]byte(fmt.Sprint(os.Getpid())), 0); err != nil {
+		f.Close()
+		return nil, 0, err
+	}
+	return func() { f.Truncate(0); f.Close() }, 0, nil
 }
 
 func wait(args []string, stdout, stderr io.Writer) int {
@@ -331,6 +344,7 @@ func runner(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "runner: --repo is required: name each repository URL this runner serves")
 		return 2
 	}
+	fmt.Fprintln(stderr, "tardis runner: a stand-in until builds 4 and 5. Re-runs are --rerun-cmd; check runs and PRs are only logged, never posted or opened.")
 	r := &ship.Runner{Repos: repos, WorkDir: *workDir, Exec: executor.Local{}, Log: stdout}
 	if *rerun != "" {
 		r.RerunCmd = []string{"sh", "-c", *rerun}

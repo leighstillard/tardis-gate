@@ -112,6 +112,15 @@ func TestAuthorGateGetsNoTemporalKeyAndKeepsItsOutput(t *testing.T) {
 	}
 }
 
+func TestAuthorReviewStaysOnItsBranch(t *testing.T) {
+	// Another branch at the same commit: the check must not land on it.
+	a, git := authorRepo(t)
+	git("checkout", "-q", "-b", "other")
+	if _, err := a.AuthorReview(context.Background(), reviewIn(git, "simplify")); err == nil || !strings.Contains(err.Error(), "no longer on feature") {
+		t.Errorf("review on branch other: err = %v", err)
+	}
+}
+
 func TestAuthorReviewRetryResumesFromItsOwnCheck(t *testing.T) {
 	a, git := authorRepo(t)
 	in := reviewIn(git, "simplify")

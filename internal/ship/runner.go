@@ -427,7 +427,8 @@ func (r *Runner) OpenPR(ctx context.Context, in OpenPRIn) (string, error) {
 		}
 	}
 	fmt.Fprintf(r.Log, "open-pr %s into %s at %s\n", in.Branch, in.Base, in.Head)
-	return "local:" + in.Branch + "@" + in.Head[:min(12, len(in.Head))], nil
+	// Not a URL: no PR exists until the GitHub App lands (build 5).
+	return "stand-in:" + in.Branch + "@" + in.Head[:min(12, len(in.Head))] + " (no PR opened)", nil
 }
 
 // gitOut runs git, killed if ctx ends (an activity's deadline or cancellation).

@@ -35,6 +35,9 @@ type Author struct {
 // the check commit's summary. It returns the new branch tip.
 func (a *Author) AuthorReview(ctx context.Context, in AuthorReviewIn) (string, error) {
 	defer heartbeat(ctx)() // from the start: a slow fetch or diff must not look like a dead author
+	if err := a.onBranch(ctx); err != nil {
+		return "", err
+	}
 	tip, err := gitOut(ctx, a.Dir, "rev-parse", "HEAD")
 	if err != nil {
 		return "", err
@@ -69,10 +72,23 @@ func (a *Author) AuthorReview(ctx context.Context, in AuthorReviewIn) (string, e
 			return "", err
 		}
 	}
+	if err := a.onBranch(ctx); err != nil {
+		return "", err
+	}
 	if _, err := gitOut(ctx, a.Dir, "push", "-q", a.Remote, "HEAD:refs/heads/"+a.Branch); err != nil {
 		return "", err
 	}
 	return gitOut(ctx, a.Dir, "rev-parse", "HEAD")
+}
+
+// onBranch makes sure the working copy is still on the run's branch: a check
+// commit goes on whichever branch is checked out, and is pushed to this one.
+func (a *Author) onBranch(ctx context.Context) error {
+	if ref, err := gitOut(ctx, a.Dir, "symbolic-ref", "-q", "HEAD"); err != nil || ref != "refs/heads/"+a.Branch {
+		return temporal.NewNonRetryableApplicationError(
+			fmt.Sprintf("the working copy is no longer on %s; check it out and run tardis request again", a.Branch), "Malformed", nil)
+	}
+	return nil
 }
 
 // onFirstParent reports whether ref itself once pointed at id: id is on its
@@ -197,6 +213,9 @@ func (a *Author) review(ctx context.Context, in AuthorReviewIn, base string) err
 	} else if now != in.Tip {
 		return temporal.NewNonRetryableApplicationError(
 			"branch moved during the review (HEAD is now "+now+"); run tardis request again", "Malformed", nil)
+	}
+	if err := a.onBranch(ctx); err != nil {
+		return err
 	}
 	sha, err := chain.Commit(a.Dir, in.Gate, string(summary), a.Tool)
 	if err != nil {
