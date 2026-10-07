@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/leighstillard/tardis-gate/internal/chain"
 )
 
 const sample = "../../testdata/sample-repo"
@@ -430,12 +432,12 @@ func TestConfiguredPathsAreShallow(t *testing.T) {
 
 func TestReservedGateNamesAndBackslashes(t *testing.T) {
 	for cfg, want := range map[string]string{
-		"gates:\n  - name: ..\n":                                     `gate name ".." is reserved`,
-		"gates:\n  - name: " + strings.Repeat("a", maxName+1) + "\n": "is longer than 64 bytes",
-		"gates:\n  - name: '{security}'\n":                           `gate name "{security}" is reserved`,
-		"gates:\n  - name: lint\n    dir: tools\\lint\n":             `"tools\\lint": separate directories with /`,
-		"gates:\n  - name: 'foo\\bar'\n":                             `gate name "foo\\bar" is reserved`,
-		"gates:\n  - name: lint\n    dir: C:/tools\n":                `"C:/tools" must be a relative path inside the repository`,
+		"gates:\n  - name: ..\n": `gate name ".." is reserved`,
+		"gates:\n  - name: " + strings.Repeat("a", chain.MaxGateName+1) + "\n": "is longer than 64 bytes",
+		"gates:\n  - name: '{security}'\n":                                     `gate name "{security}" is reserved`,
+		"gates:\n  - name: lint\n    dir: tools\\lint\n":                       `"tools\\lint": separate directories with /`,
+		"gates:\n  - name: 'foo\\bar'\n":                                       `gate name "foo\\bar" is reserved`,
+		"gates:\n  - name: lint\n    dir: C:/tools\n":                          `"C:/tools" must be a relative path inside the repository`,
 		// A custom dir named like the embedded-gate source.
 		"gates:\n  - name: security\n    dir: reference:security\n": `"reference:security" must be a relative path`,
 	} {
