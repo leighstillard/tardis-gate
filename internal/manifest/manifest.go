@@ -74,6 +74,9 @@ const (
 	// Each path element is a git call when loading from a commit.
 	maxDepth = 8
 	maxGlobs = 32 // applies_when patterns per gate
+	// A gate name's bytes, so resolve's output (64 names, each escaped up to
+	// six times over) stays well within one command-line argument.
+	maxName = 64
 	// ponytail: no real diff gets near these; a branch that does is refused
 	// rather than resolved slowly. With maxGates and maxGlobs they bound
 	// matching to about 40 million short regexp runs.
@@ -285,6 +288,10 @@ func load(read readFunc) (*Manifest, error) {
 		// resolve output.
 		if ref.Name == "." || ref.Name == ".." || strings.ContainsRune(ref.Name, '\\') || strings.IndexAny(ref.Name, "{[") == 0 {
 			errs = append(errs, fmt.Errorf("gates: gate name %q is reserved", ref.Name))
+			continue
+		}
+		if len(ref.Name) > maxName {
+			errs = append(errs, fmt.Errorf("gates: gate name %.20q… is longer than %d bytes", ref.Name, maxName))
 			continue
 		}
 		if seen[ref.Name] {
