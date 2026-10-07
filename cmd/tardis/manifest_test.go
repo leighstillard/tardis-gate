@@ -105,8 +105,8 @@ func TestResolveRefusesAHeadThatBreaksThePolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	git("commit", "-q", "-am", "break the policy")
-	if code, _, stderr := runCLI("manifest", "resolve", "main", "HEAD", "--repo", dir); code != 1 || !strings.Contains(stderr, "HEAD: ") {
-		t.Errorf("head with a broken manifest: exit %d err %q, want 1 naming HEAD", code, stderr)
+	if code, _, stderr := runCLI("manifest", "resolve", "main", "HEAD", "--repo", dir); code != 1 || !strings.Contains(stderr, "merging HEAD into main: ") {
+		t.Errorf("head with a broken manifest: exit %d err %q, want 1 naming the merge", code, stderr)
 	}
 	if code, _, stderr := runCLI("chain", "verify", "main", "HEAD", "--manifest", "--repo", dir); code != 1 {
 		t.Errorf("chain verify --manifest, head with a broken manifest: exit %d err %q, want 1", code, stderr)
@@ -138,6 +138,49 @@ func TestChainVerifyRefusesAForgedResolution(t *testing.T) {
 		if code, _, stderr := runCLI("chain", "verify", "main", "HEAD", "--gates", forged, "--repo", dir); code != 2 || !strings.Contains(stderr, "resolves") {
 			t.Errorf("gates %s: exit %d err %q, want 2 and a mismatch message", gates, code, stderr)
 		}
+	}
+}
+
+func TestResolveChecksThePolicyAfterTheMerge(t *testing.T) {
+	// Base points the runbook at B; the branch, cut before that, deletes B.
+	// Each loads on its own; merged, base would name a runbook that is gone.
+	dir, git := gitRepo(t)
+	write := func(rel, body string) {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("checkout", "-q", "main")
+	write(".tardis/config.yml", "verify_runbook: A.md\ngates:\n  - name: verify\n")
+	write("A.md", "a\n")
+	write("B.md", "b\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "enrol")
+	git("checkout", "-q", "feature")
+	git("rebase", "-q", "main")
+	git("rm", "-q", "B.md")
+	git("commit", "-q", "-m", "drop B")
+	git("checkout", "-q", "main")
+	write(".tardis/config.yml", "verify_runbook: B.md\ngates:\n  - name: verify\n")
+	git("commit", "-q", "-am", "runbook is B")
+	git("checkout", "-q", "feature")
+	if code, _, stderr := runCLI("manifest", "resolve", "main", "HEAD", "--repo", dir); code != 1 || !strings.Contains(stderr, "B.md not found") {
+		t.Errorf("merge leaves a missing runbook: exit %d err %q, want 1", code, stderr)
+	}
+
+	// A conflict cannot be checked: rebase first.
+	write("A.md", "branch\n")
+	git("commit", "-q", "-am", "edit A")
+	git("checkout", "-q", "main")
+	write("A.md", "main\n")
+	git("commit", "-q", "-am", "edit A too")
+	git("checkout", "-q", "feature")
+	if code, _, stderr := runCLI("manifest", "resolve", "main", "HEAD", "--repo", dir); code != 1 || !strings.Contains(stderr, "rebase it first") {
+		t.Errorf("conflicting head: exit %d err %q, want 1 and rebase", code, stderr)
 	}
 }
 

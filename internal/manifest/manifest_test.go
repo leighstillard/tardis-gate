@@ -422,6 +422,11 @@ func TestGateCountIsCapped(t *testing.T) {
 	wantErr(t, root, fmt.Sprintf("gates: %d listed; at most %d", maxGates+1, maxGates))
 }
 
+func TestGateDirMustBeBelowTheRoot(t *testing.T) {
+	root := copySample(t, map[string]string{".tardis/config.yml": "gates:\n  - name: lint\n    dir: .\n", "gate.yml": "name: lint\nrun: [make]\ntimeout: 1m\n"})
+	wantErr(t, root, `gate "lint": dir: must be a directory below the repository root`)
+}
+
 func TestPolicyChangesGetEveryGate(t *testing.T) {
 	// Every gate is scoped away from the policy files; changing them must
 	// still be reviewed by all of them.

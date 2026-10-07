@@ -272,41 +272,47 @@ func unmoved(repo string, refs []string, pinned [2]string) error {
 
 // resolveGates resolves base and head once, so policy and diff come from the
 // same revisions, and returns their IDs and the gates that apply. The policy
-// comes from base, so a branch cannot drop the gates it must pass; head's
-// policy must load too, or merging it would leave the base unable to resolve
-// anything, with no PR path to repair it. On error, code is 1 for a bad
-// manifest and 2 otherwise.
+// comes from base, so a branch cannot drop the gates it must pass; the policy
+// after merging head must load too, or the merge would leave the base unable
+// to resolve anything, with no PR path to repair it. On error, code is 1 for
+// a bad manifest and 2 otherwise.
 func resolveGates(repo, base, head string) (ids [2]string, names []string, code int, err error) {
 	for i, rev := range []string{base, head} {
 		if ids[i], err = manifest.CommitID(repo, rev); err != nil {
 			return ids, nil, 2, err
 		}
 	}
-	var m [2]*manifest.Manifest
-	for i, rev := range []string{base, head} {
-		m[i], err = manifest.LoadRev(repo, ids[i])
-		if errors.Is(err, manifest.ErrNotEnrolled) {
-			if i == 0 {
-				return ids, nil, 1, fmt.Errorf("%s is not enrolled: commit %s to it first; enrolment is an operator step that tardis does not gate", base, manifest.ConfigPath)
-			}
-			return ids, nil, 1, fmt.Errorf("%s removes %s; unenrolment is an operator step that tardis does not gate", head, manifest.ConfigPath)
-		} else if err != nil {
-			code := 1 // the manifest is wrong
-			if ge := (*manifest.GitError)(nil); errors.As(err, &ge) {
-				code = 2 // git could not read it
-			}
-			return ids, nil, code, fmt.Errorf("%s: %s", rev, strings.ReplaceAll(err.Error(), "\n", "; "))
-		}
+	m, err := manifest.LoadRev(repo, ids[0])
+	if errors.Is(err, manifest.ErrNotEnrolled) {
+		return ids, nil, 1, fmt.Errorf("%s is not enrolled: commit %s to it first; enrolment is an operator step that tardis does not gate", base, manifest.ConfigPath)
+	} else if err != nil {
+		return ids, nil, policyCode(err), fmt.Errorf("%s: %s", base, strings.ReplaceAll(err.Error(), "\n", "; "))
+	}
+	err = manifest.CheckMerge(repo, ids[0], ids[1])
+	if errors.Is(err, manifest.ErrNotEnrolled) {
+		return ids, nil, 1, fmt.Errorf("merging %s would remove %s; unenrolment is an operator step that tardis does not gate", head, manifest.ConfigPath)
+	} else if errors.Is(err, manifest.ErrConflict) {
+		return ids, nil, 1, fmt.Errorf("%s does not merge cleanly into %s; rebase it first", head, base)
+	} else if err != nil {
+		return ids, nil, policyCode(err), fmt.Errorf("merging %s into %s: %s", head, base, strings.ReplaceAll(err.Error(), "\n", "; "))
 	}
 	changed, err := manifest.Changed(repo, ids[0], ids[1])
 	if err != nil {
 		return ids, nil, 2, err
 	}
 	names = []string{}
-	for _, g := range m[0].Resolve(changed) {
+	for _, g := range m.Resolve(changed) {
 		names = append(names, g.Name)
 	}
 	return ids, names, 0, nil
+}
+
+// policyCode is 2 when git could not read the policy, 1 when it is wrong.
+func policyCode(err error) int {
+	if ge := (*manifest.GitError)(nil); errors.As(err, &ge) {
+		return 2
+	}
+	return 1
 }
 
 // releaseVersion is stamped by the release workflow with -ldflags -X.

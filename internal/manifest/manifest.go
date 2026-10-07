@@ -149,6 +149,43 @@ func LoadRev(repo, rev string) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
+	return loadAt(repo, id, rev)
+}
+
+// ErrConflict means head does not merge cleanly into base.
+var ErrConflict = errors.New("does not merge cleanly")
+
+// CheckMerge reports whether merging head into base would leave a manifest
+// that loads. Base and head can each be fine while their merge is not, and a
+// base that cannot load its policy can't resolve anything again.
+func CheckMerge(repo, baseID, headID string) error {
+	cmd := exec.Command("git", "--no-replace-objects", "-C", repo, "merge-tree", "--write-tree", "--no-messages", baseID, headID)
+	cmd.Env = chain.GitEnv()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	var ee *exec.ExitError
+	if err := cmd.Run(); errors.As(err, &ee) && ee.ExitCode() == 1 {
+		return ErrConflict
+	} else if err != nil {
+		return &GitError{"git merge-tree: " + strings.TrimSpace(stderr.String())}
+	}
+	tree, _, _ := strings.Cut(stdout.String(), "\n")
+	if !isTreeID(tree) {
+		return &GitError{fmt.Sprintf("git merge-tree: unexpected output %q", tree)}
+	}
+	_, err := loadAt(repo, tree, "the merge")
+	return err
+}
+
+func isTreeID(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	return strings.Trim(s, "0123456789abcdef") == ""
+}
+
+// loadAt reads the manifest from id, a commit or tree; rev names it in errors.
+func loadAt(repo, id, rev string) (*Manifest, error) {
 	return load(func(p string) ([]byte, error) {
 		// Walk the path one entry at a time. Only an empty, successful listing
 		// means "not found"; a git failure, or a symlink or submodule on the
@@ -308,6 +345,9 @@ func loadGate(read readFunc, ref GateRef) (Gate, error) {
 	switch {
 	case ref.Dir != "":
 		dir, err := local(ref.Dir)
+		if err == nil && dir == "." {
+			err = errors.New("must be a directory below the repository root")
+		}
 		if err != nil {
 			return Gate{}, fmt.Errorf("gate %q: dir: %w", ref.Name, err)
 		}
