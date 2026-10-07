@@ -22,7 +22,7 @@ const usage = `usage:
   tardis manifest lint [--repo <dir>]
   tardis manifest resolve <base> <head> [--repo <dir>]
   tardis request [<sha>] --tool <vendor/tool/model> [--repo <dir>] [--remote <name>]
-  tardis wait [--repo <dir>] [--remote <name>]
+  tardis wait --tool <vendor/tool/model> [--repo <dir>] [--remote <name>]
   tardis runner --repo <url>... [--work-dir <dir>] [--rerun-cmd <sh>]
   tardis version
 `

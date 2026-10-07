@@ -451,6 +451,15 @@ func (r *Runner) OpenPR(ctx context.Context, in OpenPRIn) (string, error) {
 // Replacement objects are off: a local refs/replace entry must not change
 // what a commit ID means.
 func gitOut(ctx context.Context, dir string, args ...string) (string, error) {
+	var stdout bytes.Buffer
+	if err := gitTo(ctx, dir, &stdout, args...); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+// gitTo is gitOut writing git's output to w as it comes.
+func gitTo(ctx context.Context, dir string, w io.Writer, args ...string) error {
 	if dir != "" {
 		args = append([]string{"-C", dir}, args...)
 	}
@@ -463,10 +472,10 @@ func gitOut(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 5 * time.Second
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	var stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = w, &stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(stderr.String()))
 	}
-	return strings.TrimSpace(stdout.String()), nil
+	return nil
 }

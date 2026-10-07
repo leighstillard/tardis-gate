@@ -294,8 +294,10 @@ func load(read readFunc) (*Manifest, error) {
 		m.BaseBranch = "main"
 	}
 	var errs []error
-	if !branchName.MatchString(m.BaseBranch) || strings.Contains(m.BaseBranch, "..") || strings.Contains(m.BaseBranch, "//") ||
-		strings.HasSuffix(m.BaseBranch, ".lock") || strings.HasSuffix(m.BaseBranch, "/") || strings.HasSuffix(m.BaseBranch, ".") {
+	if !branchName.MatchString(m.BaseBranch) || strings.Contains(m.BaseBranch, "..") || strings.HasSuffix(m.BaseBranch, ".") ||
+		slices.ContainsFunc(strings.Split(m.BaseBranch, "/"), func(c string) bool {
+			return c == "" || strings.HasPrefix(c, ".") || strings.HasSuffix(c, ".lock")
+		}) {
 		errs = append(errs, fmt.Errorf("base_branch %q is not a branch name git accepts", m.BaseBranch))
 	}
 	seen := map[string]bool{}
@@ -422,8 +424,8 @@ func loadGate(read readFunc, ref GateRef) (Gate, error) {
 	}
 	if g.Retry < 0 {
 		errs = append(errs, errors.New("retry must not be negative"))
-	} else if g.Retry > 100 { // and a huge one would wrap to "no limit"
-		errs = append(errs, errors.New("retry must be at most 100"))
+	} else if g.Retry > 10 { // more cannot finish within the hour's backoff, and a huge one would wrap to "no limit"
+		errs = append(errs, errors.New("retry must be at most 10"))
 	}
 	if g.MustDifferFrom != "" && g.MustDifferFrom != "author" {
 		errs = append(errs, fmt.Errorf("must_differ_from is %q; only \"author\" is supported", g.MustDifferFrom))

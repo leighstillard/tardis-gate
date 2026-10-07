@@ -2,6 +2,7 @@ package ship
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -85,6 +86,22 @@ func (a *Author) AuthorReview(ctx context.Context, in AuthorReviewIn) (string, e
 	return tip, nil
 }
 
+var errTooBig = errors.New("too big")
+
+// readAtMost reads the file at path, or errTooBig past max bytes.
+func readAtMost(path string, max int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err == nil && int64(len(b)) > max {
+		err = errTooBig
+	}
+	return b, err
+}
+
 // onBranch makes sure the working copy is still on the run's branch: a check
 // commit goes on whichever branch is checked out, and is pushed to this one.
 func (a *Author) onBranch(ctx context.Context) error {
@@ -164,12 +181,16 @@ func (a *Author) review(ctx context.Context, in AuthorReviewIn, base string) err
 		return err
 	}
 	defer os.RemoveAll(tmp)
-	diff, err := gitOut(ctx, a.Dir, "diff", base+"..."+in.Code)
+	diffFile, findings := filepath.Join(tmp, "diff"), filepath.Join(tmp, "findings")
+	df, err := os.OpenFile(diffFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
-	diffFile, findings := filepath.Join(tmp, "diff"), filepath.Join(tmp, "findings")
-	if err := os.WriteFile(diffFile, []byte(diff), 0o600); err != nil {
+	err = gitTo(ctx, a.Dir, df, "diff", base+"..."+in.Code) // straight to disk, however large
+	if cerr := df.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
 		return err
 	}
 
@@ -203,7 +224,10 @@ func (a *Author) review(ctx context.Context, in AuthorReviewIn, base string) err
 		return temporal.NewNonRetryableApplicationError(
 			fmt.Sprintf("%s exited %d; its output is on the author's machine", cmd, res.ExitCode), "Rejected", nil)
 	}
-	summary, err := os.ReadFile(findings)
+	summary, err := readAtMost(findings, 64<<10) // the gate decides its size
+	if errors.Is(err, errTooBig) {
+		return temporal.NewNonRetryableApplicationError("the gate's findings are over 64 KiB", "Malformed", nil)
+	}
 	if err != nil || strings.TrimSpace(string(summary)) == "" {
 		return temporal.NewNonRetryableApplicationError("the gate wrote no findings to $TARDIS_FINDINGS_OUT", "Malformed", nil)
 	}

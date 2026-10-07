@@ -428,6 +428,20 @@ func TestEachPassHasItsOwnID(t *testing.T) {
 	}
 }
 
+func TestGateRetriesFitTheDeadline(t *testing.T) {
+	// Ten retries of a 20-minute review cannot fit in an hour: the
+	// deadline grows to hold every attempt and the backoff between.
+	var s testsuite.WorkflowTestSuite
+	env := s.NewTestWorkflowEnvironment()
+	env.ExecuteWorkflow(func(ctx workflow.Context) (time.Duration, error) {
+		return workflow.GetActivityOptions(gateRetries(runnerOpts(ctx, 20*time.Minute), 10)).ScheduleToCloseTimeout, nil
+	})
+	var got time.Duration
+	if err := env.GetWorkflowResult(&got); err != nil || got < 11*20*time.Minute {
+		t.Errorf("deadline %v, %v; want room for 11 attempts of 20 minutes", got, err)
+	}
+}
+
 func TestAbandonedAfterAWeekWithoutAFix(t *testing.T) {
 	f := &fake{gates: []string{"simplify"}}
 	f.rerun = func(RerunIn) (Verdict, error) { return Verdict{Reason: "no"}, nil }

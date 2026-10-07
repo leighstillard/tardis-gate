@@ -61,6 +61,10 @@ func gateRetries(ctx workflow.Context, retries int) workflow.Context {
 	p := *retry
 	p.MaximumAttempts = int32(retries) + 1 // 0 would mean no limit
 	opts.RetryPolicy = &p
+	// Room for every attempt at its full length, plus the backoff between.
+	if need := time.Duration(retries+1)*opts.StartToCloseTimeout + time.Duration(retries)*p.MaximumInterval; need > opts.ScheduleToCloseTimeout {
+		opts.ScheduleToCloseTimeout = need
+	}
 	return workflow.WithActivityOptions(ctx, opts)
 }
 
@@ -103,7 +107,8 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 
 	for passes := 0; ; passes++ {
 		head = latest(heads, head)
-		if passes == MaxPasses {
+		// Bound history by pass count, or sooner if Temporal says it is big.
+		if passes == MaxPasses || passes > 0 && workflow.GetInfo(ctx).GetContinueAsNewSuggested() {
 			// Queued heads are drained above, so the newest goes with it.
 			next := in
 			next.Head = head

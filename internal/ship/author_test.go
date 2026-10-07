@@ -2,6 +2,7 @@ package ship
 
 import (
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -118,6 +119,26 @@ func TestAuthorReviewStaysOnItsBranch(t *testing.T) {
 	git("checkout", "-q", "-b", "other")
 	if _, err := a.AuthorReview(context.Background(), reviewIn(git, "simplify")); err == nil || !strings.Contains(err.Error(), "no longer on feature") {
 		t.Errorf("review on branch other: err = %v", err)
+	}
+}
+
+func TestAuthorReviewRefusesOversizedFindings(t *testing.T) {
+	a, git := authorRepo(t)
+	a.Exec, a.Out = executor.Local{}, io.Discard
+	git("checkout", "-q", "main")
+	gate := filepath.Join(a.Dir, ".tardis", "gates", "simplify", "gate.yml")
+	if err := os.MkdirAll(filepath.Dir(gate), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gate, []byte("name: simplify\nrun: [sh, -c, 'head -c 70000 /dev/zero | tr \"\\\\0\" x > \"$TARDIS_FINDINGS_OUT\"']\ntimeout: 1m\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "-A")
+	git("commit", "-q", "-m", "simplify writes too much")
+	git("push", "-q", "origin", "main")
+	git("checkout", "-q", "feature")
+	if _, err := a.AuthorReview(context.Background(), reviewIn(git, "simplify")); err == nil || !strings.Contains(err.Error(), "over 64 KiB") {
+		t.Errorf("err = %v; want oversized findings refused", err)
 	}
 }
 
