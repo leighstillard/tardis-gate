@@ -45,19 +45,23 @@ func (c commit) checkGate() (string, bool) {
 // and anything else is code. A later check for a gate replaces an earlier one,
 // and a code commit supersedes every valid check before it.
 func Verify(dir, base, head string, gates []string) (map[string]string, error) {
-	if _, err := git(dir, "rev-parse", "--verify", "--quiet", base+"^{commit}"); err != nil {
+	// Resolve both names once; every later read uses the object IDs, so a ref
+	// that moves mid-run cannot mix two histories.
+	baseID, err := git(dir, "rev-parse", "--verify", "--quiet", base+"^{commit}")
+	if err != nil {
 		return nil, fmt.Errorf("base %q is not a commit in %s", base, dir)
 	}
-	if _, err := git(dir, "rev-parse", "--verify", "--quiet", head+"^{commit}"); err != nil {
+	headID, err := git(dir, "rev-parse", "--verify", "--quiet", head+"^{commit}")
+	if err != nil {
 		return nil, fmt.Errorf("head %q is not a commit in %s", head, dir)
 	}
 	// Starting from the merge base keeps a check from claiming a base commit
 	// that head's history doesn't contain.
-	mb, err := git(dir, "merge-base", base, head)
+	mb, err := git(dir, "merge-base", baseID, headID)
 	if err != nil {
 		return nil, fmt.Errorf("base %q and head %q share no history", base, head)
 	}
-	commits, err := history(dir, "--reverse", "--topo-order", mb+".."+head)
+	commits, err := history(dir, "--reverse", "--topo-order", mb+".."+headID)
 	if err != nil {
 		return nil, err
 	}
@@ -92,6 +96,11 @@ func Verify(dir, base, head string, gates []string) (map[string]string, error) {
 			}
 		}
 		lastCode = c.sha
+	}
+
+	// The verdict is about headID; refuse to hand it to a name that has moved on.
+	if now, err := git(dir, "rev-parse", "--verify", "--quiet", head+"^{commit}"); err != nil || now != headID {
+		return nil, fmt.Errorf("head %q moved during verification (was %s); verify again", head, headID)
 	}
 
 	out := make(map[string]string, len(gates))
