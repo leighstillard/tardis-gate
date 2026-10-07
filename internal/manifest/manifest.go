@@ -280,9 +280,10 @@ func load(read readFunc) (*Manifest, error) {
 			errs = append(errs, fmt.Errorf("gates: %w", err))
 			continue
 		}
-		// . and .. would leave .tardis/gates/<name>; { and [ start JSON, which
-		// chain verify --gates reads as resolve output.
-		if ref.Name == "." || ref.Name == ".." || strings.IndexAny(ref.Name, "{[") == 0 {
+		// . and .. would leave .tardis/gates/<name>, and \ is a separator on
+		// Windows; { and [ start JSON, which chain verify --gates reads as
+		// resolve output.
+		if ref.Name == "." || ref.Name == ".." || strings.ContainsRune(ref.Name, '\\') || strings.IndexAny(ref.Name, "{[") == 0 {
 			errs = append(errs, fmt.Errorf("gates: gate name %q is reserved", ref.Name))
 			continue
 		}
@@ -331,8 +332,9 @@ func local(p string) (string, error) {
 	if strings.Contains(p, "\\") { // committed text is read on Linux, where \ is a name
 		return "", fmt.Errorf("%q: separate directories with /", p)
 	}
+	// Judged the same on every host: no root, no .., no drive or stream colon.
 	c := path.Clean(p)
-	if !filepath.IsLocal(filepath.FromSlash(c)) {
+	if p == "" || path.IsAbs(c) || c == ".." || strings.HasPrefix(c, "../") || strings.Contains(c, ":") {
 		return "", fmt.Errorf("%q must be a relative path inside the repository", p)
 	}
 	if strings.Count(c, "/") >= maxDepth {

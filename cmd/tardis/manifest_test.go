@@ -214,6 +214,18 @@ func TestResolveRunsNoMergeDriver(t *testing.T) {
 	}
 }
 
+func TestManifestLintCannotLook(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, repo := range []string{filepath.Join(t.TempDir(), "gone"), file} {
+		if code, _, stderr := runCLI("manifest", "lint", "--repo", repo); code != 2 {
+			t.Errorf("lint on %s: exit %d err %q, want 2", repo, code, stderr)
+		}
+	}
+}
+
 func TestUnmovedCatchesAMovedHead(t *testing.T) {
 	dir, git := gitRepo(t)
 	pinned := [2]string{git("rev-parse", "main"), git("rev-parse", "HEAD")}

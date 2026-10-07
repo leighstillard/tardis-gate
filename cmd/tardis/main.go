@@ -198,7 +198,10 @@ func manifestLint(args []string, stdout, stderr io.Writer) int {
 	if _, code, ok := parse(fs, "manifest lint", args, 0, stderr); !ok {
 		return code
 	}
-	if _, err := os.Stat(*repo); err != nil { // can't look, which is not a bad manifest
+	if fi, err := os.Stat(*repo); err != nil || !fi.IsDir() { // can't look, which is not a bad manifest
+		if err == nil {
+			err = fmt.Errorf("%s is not a directory", *repo)
+		}
 		fmt.Fprintln(stderr, "manifest lint:", err)
 		return 2
 	}
