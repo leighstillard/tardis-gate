@@ -1,0 +1,7 @@
+# Adversarial review by a model from a different vendor than the author's.
+name: review
+applies_when: []
+run: [tardis, review, review]
+timeout: 20m
+retry: 1
+must_differ_from: author

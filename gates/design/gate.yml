@@ -1,0 +1,7 @@
+# Review user-visible output. The enrolment config sets applies_when to the
+# repository's user-visible paths; left empty, it applies to every diff.
+name: design
+applies_when: []
+run: [tardis, review, design]
+timeout: 15m
+retry: 1

@@ -1,0 +1,8 @@
+# Sample enrolment: the four reference gates, design only for web changes.
+verify_runbook: docs/RUNBOOK.md
+gates:
+  - name: simplify
+  - name: verify
+  - name: design
+    applies_when: ["web/**"]
+  - name: review

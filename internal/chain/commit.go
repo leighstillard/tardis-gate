@@ -32,8 +32,21 @@ func CheckGateName(gate string) error {
 	if gate == "" || strings.ContainsAny(gate, "/:,") || strings.IndexFunc(gate, bad) >= 0 {
 		return fmt.Errorf("gate %q: must be a non-empty name without spaces, commas, slashes or colons", gate)
 	}
+	// A name is also a directory, .tardis/gates/<name>, so not . .. or with
+	// \ (a separator on Windows); { and [ start the JSON that
+	// `chain verify --gates` reads as manifest resolve output; and resolve's
+	// output must fit in one command-line argument.
+	if gate == "." || gate == ".." || strings.ContainsRune(gate, '\\') || strings.IndexAny(gate, "{[") == 0 {
+		return fmt.Errorf("gate name %q is reserved", gate)
+	}
+	if len(gate) > MaxGateName {
+		return fmt.Errorf("gate name %.20q… is longer than %d bytes", gate, MaxGateName)
+	}
 	return nil
 }
+
+// MaxGateName is the longest gate name, in bytes.
+const MaxGateName = 64
 
 // Commit writes an empty check commit for gate on HEAD of the repo in dir.
 // Ship-Check-Of is the nearest code commit at or before HEAD. The commit is
