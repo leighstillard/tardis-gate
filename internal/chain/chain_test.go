@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -400,6 +401,22 @@ func TestGraftsAreIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 	want(t, r.verify("simplify"), "simplify", broken("superseded"))
+}
+
+func TestGitEnvKeepsStderrQuiet(t *testing.T) {
+	// Callers parse git's output and quote its stderr in errors; turning
+	// grafts off must not add git's deprecation hint to either.
+	r := newRepo(t)
+	r.code("A")
+	t.Setenv("GIT_CONFIG_KEY_0", "advice.graftFileDeprecated")
+	t.Setenv("GIT_CONFIG_VALUE_0", "true")
+	cmd := exec.Command("git", "-C", r.dir, "rev-parse", "--verify", "HEAD^{commit}")
+	cmd.Env = GitEnv()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil || stderr.Len() > 0 {
+		t.Errorf("git rev-parse with GitEnv: err = %v, stderr = %q", err, stderr.String())
+	}
 }
 
 func TestCommitEncodingDoesNotBreakUnicodeGates(t *testing.T) {

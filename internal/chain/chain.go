@@ -321,7 +321,9 @@ var localEnv = map[string]bool{
 // GitEnv is this process's environment without git's repository-location
 // variables, so a git run with -C reads the repository it names even when
 // tardis is started from a hook in another one. Legacy grafts
-// (.git/info/grafts), which rewrite parents as replace refs do, are off.
+// (.git/info/grafts), which rewrite parents as replace refs do, are off, and
+// so is git's hint that the graft file is deprecated, which would otherwise
+// print on every run.
 func GitEnv() []string {
 	env := []string{"GIT_GRAFT_FILE=" + os.DevNull}
 	for _, kv := range os.Environ() {
@@ -329,7 +331,8 @@ func GitEnv() []string {
 			env = append(env, kv)
 		}
 	}
-	return env
+	// Last, so they win over an inherited GIT_CONFIG_KEY_0 or _VALUE_0.
+	return append(env, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=advice.graftFileDeprecated", "GIT_CONFIG_VALUE_0=false")
 }
 
 func git(dir string, args ...string) (string, error) {
