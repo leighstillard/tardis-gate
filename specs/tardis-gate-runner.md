@@ -15,6 +15,8 @@ context and a different vendor, and only its `tardis/<gate>` check run counts.
 - Verdict: reject with reason if `missed` or `disputed` is non-empty, else pass.
 - Post `tardis/<gate>` check run on the SHA as the App: success, or failure with reason
   and findings in the check-run output. Heartbeats throughout (numbers in -workflow).
+- `tardis review <gate>`: the reference gates' `run`; the same blind review via the
+  configured provider, from the author's side. A stub that exits 2 until this build.
 - `tardis runner`: hosts queue `runner`; reads App key, provider key, Temporal env.
 - Touches: `internal/runner`, `internal/provider`, `internal/ghapp`, `cmd/tardis runner`.
   Does not touch: branch contents (read-only clone), author tokens, chain rules.
