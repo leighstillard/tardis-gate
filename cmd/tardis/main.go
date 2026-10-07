@@ -174,13 +174,23 @@ func manifestResolve(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return code
 	}
+	// Resolve both names once, so policy and diff come from the same revisions.
+	var ids [2]string
+	for i, rev := range pos {
+		id, err := manifest.CommitID(*repo, rev)
+		if err != nil {
+			fmt.Fprintln(stderr, "manifest resolve:", err)
+			return 2
+		}
+		ids[i] = id
+	}
 	// The policy comes from base, so a branch cannot drop the gates it must pass.
-	m, err := manifest.LoadRev(*repo, pos[0])
+	m, err := manifest.LoadRev(*repo, ids[0])
 	if err != nil {
 		fmt.Fprintln(stderr, "manifest resolve:", strings.ReplaceAll(err.Error(), "\n", "; "))
 		return 1
 	}
-	changed, err := manifest.Changed(*repo, pos[0], pos[1])
+	changed, err := manifest.Changed(*repo, ids[0], ids[1])
 	if err != nil {
 		fmt.Fprintln(stderr, "manifest resolve:", err)
 		return 2

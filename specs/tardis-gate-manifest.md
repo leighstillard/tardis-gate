@@ -14,7 +14,8 @@ with a `gate.yml`, and one command resolves the ordered gate list a given diff m
   and the enrolment config supplies the user-visible globs; `review.must_differ_from`.
 - Enrolment config `.tardis/config.yml`: `base_branch`, `gates:` ordered list with
   `enabled`, `dir` (override), per-gate `applies_when`; `verify_runbook`; `provider`,
-  `author_vendors`, `auto_merge`, `merge_method` (consumed by -runner / -pr).
+  `author_vendors`, `auto_merge`, `merge_method`. Each key lands with the build that
+  reads it (`base_branch` -workflow, rest -runner / -pr); lint rejects it until then.
 - `tardis manifest lint` → schema/order errors; `tardis manifest resolve <base> <head>`
   → ordered JSON of applicable gates for the diff (feeds -evidence `--gates`, -workflow).
 - Touches: `gates/`, `internal/manifest`, `cmd/tardis`. Does not touch: Temporal, GitHub

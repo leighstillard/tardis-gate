@@ -184,8 +184,10 @@ func TestLoadDoesNotFollowSymlinksOut(t *testing.T) {
 	wantErr(t, root, "verify_runbook: docs/RUNBOOK.md not found")
 }
 
-func TestLoadRevReadsTheCommittedPolicy(t *testing.T) {
-	root := copySample(t, nil)
+// committedSample is copySample committed to main in a new repository.
+func committedSample(t *testing.T, edits map[string]string) string {
+	t.Helper()
+	root := copySample(t, edits)
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"add", "-A"}, {"commit", "-q", "-m", "base"}} {
@@ -195,6 +197,20 @@ func TestLoadRevReadsTheCommittedPolicy(t *testing.T) {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
+	return root
+}
+
+func TestLoadRevFailsClosedOnANonBlobGate(t *testing.T) {
+	// gate.yml is a directory: the local override exists but is unreadable, so
+	// LoadRev must fail rather than use the reference simplify gate.
+	root := committedSample(t, map[string]string{".tardis/gates/simplify/gate.yml/x": "x"})
+	if _, err := LoadRev(root, "main"); err == nil || !strings.Contains(err.Error(), ".tardis/gates/simplify/gate.yml") {
+		t.Errorf("err = %v, want a failure naming the override", err)
+	}
+}
+
+func TestLoadRevReadsTheCommittedPolicy(t *testing.T) {
+	root := committedSample(t, nil)
 	// An uncommitted edit changes Load but not LoadRev.
 	if err := write(filepath.Join(root, ConfigPath), "gates:\n  - name: simplify\n"); err != nil {
 		t.Fatal(err)

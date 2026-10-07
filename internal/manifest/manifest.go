@@ -93,18 +93,32 @@ func Load(root string) (*Manifest, error) {
 // LoadRev reads the manifest as committed at rev, so the policy that governs a
 // diff comes from a trusted revision rather than the branch under review.
 func LoadRev(repo, rev string) (*Manifest, error) {
-	id, err := gitOut(repo, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
+	id, err := CommitID(repo, rev)
 	if err != nil {
-		return nil, fmt.Errorf("%s is not a commit", rev)
+		return nil, err
 	}
-	id = strings.TrimSpace(id)
 	return load(func(p string) ([]byte, error) {
 		out, err := gitOut(repo, "cat-file", "blob", id+":"+p)
-		if err != nil {
+		if err == nil {
+			return []byte(out), nil
+		}
+		// Only a path absent from the tree is "not found"; a tree, a corrupt
+		// object or any other failure must not fall back to a reference gate.
+		if _, e := gitOut(repo, "rev-parse", "--verify", "--quiet", id+":"+p); e != nil {
 			return nil, fs.ErrNotExist
 		}
-		return []byte(out), nil
+		return nil, fmt.Errorf("%s at %s: %w", p, rev, err)
 	})
+}
+
+// CommitID resolves rev to a commit object ID, so later reads cannot see a
+// ref that has moved.
+func CommitID(repo, rev string) (string, error) {
+	id, err := gitOut(repo, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("%s is not a commit", rev)
+	}
+	return strings.TrimSpace(id), nil
 }
 
 func load(read readFunc) (*Manifest, error) {
