@@ -65,7 +65,7 @@ func repoID(url string) string {
 func request(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("request", flag.ContinueOnError)
 	af := addAuthorFlags(fs)
-	pos, code, ok := parse(fs, "request [<sha>] [--tool <vendor/tool/model>]", args, min(1, countPositional(args)), stderr)
+	pos, code, ok := parse(fs, "request [<sha>] [--tool <vendor/tool/model>]", args, countPositional(args), stderr)
 	if !ok {
 		return code
 	}

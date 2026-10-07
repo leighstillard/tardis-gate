@@ -17,11 +17,10 @@ type Job struct {
 	Resume string   // heartbeat detail from a previous attempt, "" on the first
 }
 
-// Result is how a job ended. Ref names where it ran (a run ID for remote executors).
+// Result is how a job ended.
 type Result struct {
 	ExitCode int
 	Output   string // combined stdout and stderr
-	Ref      string
 }
 
 // Executor runs a job. hb records progress a retry can resume from; executors
@@ -45,12 +44,12 @@ func (Local) Run(ctx context.Context, job Job, _ func(string)) (Result, error) {
 	err := cmd.Run()
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && ctx.Err() == nil {
-		return Result{ExitCode: exit.ExitCode(), Output: out.String(), Ref: "local"}, nil
+		return Result{ExitCode: exit.ExitCode(), Output: out.String()}, nil
 	}
 	if err != nil {
 		return Result{Output: out.String()}, err
 	}
-	return Result{Output: out.String(), Ref: "local"}, nil
+	return Result{Output: out.String()}, nil
 }
 
 // ErrNotImplemented is returned by executors whose contract is defined but not built.
