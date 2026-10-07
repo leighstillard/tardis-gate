@@ -122,7 +122,7 @@ func repoID(remoteURL string) string {
 func request(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("request", flag.ContinueOnError)
 	af := addAuthorFlags(fs)
-	pos, code, ok := parseRange(fs, "request [<sha>] [--tool <vendor/tool/model>]", args, 0, 1, stderr)
+	pos, code, ok := parseRange(fs, "request [<sha>] --tool <vendor/tool/model>", args, 0, 1, stderr)
 	if !ok {
 		return code
 	}

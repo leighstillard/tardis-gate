@@ -23,7 +23,7 @@ const usage = `usage:
   tardis manifest resolve <base> <head> [--repo <dir>]
   tardis request [<sha>] --tool <vendor/tool/model> [--repo <dir>] [--remote <name>]
   tardis wait [--repo <dir>] [--remote <name>]
-  tardis runner [--work-dir <dir>] [--rerun-cmd <sh>]
+  tardis runner --repo <url>... [--work-dir <dir>] [--rerun-cmd <sh>]
   tardis version
 `
 
@@ -93,7 +93,9 @@ func parseRange(fs *flag.FlagSet, synopsis string, args []string, min, max int, 
 	}
 	if len(pos) < min || len(pos) > max {
 		want := fmt.Sprint(min)
-		if max != min {
+		if min == 0 {
+			want = fmt.Sprintf("at most %d", max)
+		} else if max != min {
 			want = fmt.Sprintf("%d to %d", min, max)
 		}
 		fmt.Fprintf(stderr, "%s: want %s argument(s), got %d\n", fs.Name(), want, len(pos))
