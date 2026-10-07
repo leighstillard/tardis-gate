@@ -31,14 +31,17 @@ func (f *fake) log(s string) { f.mu.Lock(); f.calls = append(f.calls, s); f.mu.U
 
 func (f *fake) register(env *testsuite.TestWorkflowEnvironment) {
 	reg := func(name string, fn any) { env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name}) }
-	reg(ActResolve, func(_ context.Context, in ResolveIn) ([]GateInfo, error) {
-		var out []GateInfo
+	reg(ActResolve, func(_ context.Context, in ResolveIn) (ResolveOut, error) {
+		out := ResolveOut{BaseID: "b0"}
 		for _, g := range f.gates {
-			out = append(out, GateInfo{Name: g, Timeout: 10 * time.Minute})
+			out.Gates = append(out.Gates, GateInfo{Name: g, Timeout: 10 * time.Minute})
 		}
 		return out, nil
 	})
 	reg(ActAuthorReview, func(_ context.Context, in AuthorReviewIn) (string, error) {
+		if in.BaseID != "b0" {
+			return "", fmt.Errorf("author review got base %q, want the pinned b0", in.BaseID)
+		}
 		f.log("author:" + in.Gate + "@" + in.Code)
 		return in.Tip + "+" + in.Gate, nil // a new check commit on top
 	})
@@ -50,6 +53,9 @@ func (f *fake) register(env *testsuite.TestWorkflowEnvironment) {
 		return out, nil
 	})
 	reg(ActRerun, func(_ context.Context, in RerunIn) (Verdict, error) {
+		if in.BaseID != "b0" {
+			return Verdict{}, fmt.Errorf("rerun got base %q, want the pinned b0", in.BaseID)
+		}
 		f.log("rerun:" + in.Gate + "@" + in.Tip)
 		if f.rerun != nil {
 			return f.rerun(in)
@@ -58,8 +64,8 @@ func (f *fake) register(env *testsuite.TestWorkflowEnvironment) {
 	})
 	reg(ActPostCheck, func(_ context.Context, in CheckIn) error {
 		f.mu.Lock()
-		f.checks = append(f.checks, in.Name+" "+in.Conclusion)
-		f.checkOn = append(f.checkOn, in.Name+" "+in.Conclusion+"@"+in.SHA)
+		f.checks = append(f.checks, "tardis/"+in.Gate+" "+in.Conclusion)
+		f.checkOn = append(f.checkOn, "tardis/"+in.Gate+" "+in.Conclusion+"@"+in.SHA)
 		f.mu.Unlock()
 		return nil
 	})

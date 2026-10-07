@@ -77,6 +77,12 @@ func (e Event) String() string {
 	return strings.TrimSpace(e.Kind + " " + short + " " + e.Detail)
 }
 
+// ResolveOut is the base commit the run is pinned to and the gates that apply.
+type ResolveOut struct {
+	BaseID string // the base branch's commit when resolved; every later step uses it
+	Gates  []GateInfo
+}
+
 // GateInfo is what the workflow needs to know about a gate.
 type GateInfo struct {
 	Name    string
@@ -93,11 +99,11 @@ type Verdict struct {
 type (
 	ResolveIn struct{ RepoURL, Base, SHA string }
 	AttestIn  struct {
-		RepoURL, Base, Tip string
-		Gates              []string
+		RepoURL, BaseID, Tip string
+		Gates                []string
 	}
-	RerunIn        struct{ RepoURL, Base, Tip, Gate string }
-	CheckIn        struct{ RepoURL, SHA, Name, Conclusion, Summary string }
+	RerunIn        struct{ RepoURL, Base, BaseID, Tip, Gate string }
+	CheckIn        struct{ RepoURL, Base, BaseID, SHA, Gate, Conclusion, Summary string }
 	OpenPRIn       struct{ RepoURL, Branch, Base, Head string }
-	AuthorReviewIn struct{ Gate, Base, Code, Tip string }
+	AuthorReviewIn struct{ Gate, Base, BaseID, Code, Tip string }
 )

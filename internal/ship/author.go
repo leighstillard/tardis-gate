@@ -49,8 +49,19 @@ func (a *Author) AuthorReview(ctx context.Context, in AuthorReviewIn) (string, e
 				"Malformed", nil)
 		}
 	}
-	// The base as last fetched from the remote, as the runner reads it.
-	base := a.Remote + "/" + in.Base
+	// The base commit the runner pinned for this pass: fetch the base branch
+	// and make sure that commit is here, so both sides read the same policy.
+	base := in.BaseID
+	if _, err := gitOut(ctx, a.Dir, "fetch", "-q", a.Remote, "+refs/heads/"+in.Base+":refs/remotes/"+a.Remote+"/"+in.Base); err != nil {
+		return "", err
+	}
+	if _, err := gitOut(ctx, a.Dir, "cat-file", "-e", base+"^{commit}"); err != nil {
+		return "", temporal.NewNonRetryableApplicationError(
+			"base commit "+base+" is not on "+a.Remote+"/"+in.Base+" here", "Malformed", nil)
+	}
+	if err := a.clean(ctx); err != nil {
+		return "", err
+	}
 	st, err := chain.Verify(a.Dir, base, "HEAD", []string{in.Gate})
 	if err != nil {
 		return "", err
@@ -118,7 +129,11 @@ func (a *Author) review(ctx context.Context, in AuthorReviewIn, base string) err
 	if err != nil || strings.TrimSpace(string(summary)) == "" {
 		return temporal.NewNonRetryableApplicationError("the gate wrote no findings to $TARDIS_FINDINGS_OUT", "Malformed", nil)
 	}
-	// The review covered in.Tip; never let it vouch for code committed meanwhile.
+	// The review covered in.Tip and nothing else; never let it vouch for code
+	// committed, or left uncommitted, meanwhile.
+	if err := a.clean(ctx); err != nil {
+		return err
+	}
 	if now, err := gitOut(ctx, a.Dir, "rev-parse", "HEAD"); err != nil {
 		return err
 	} else if now != in.Tip {
@@ -127,6 +142,19 @@ func (a *Author) review(ctx context.Context, in AuthorReviewIn, base string) err
 	}
 	_, err = chain.Commit(a.Dir, in.Gate, string(summary), a.Tool)
 	return err
+}
+
+// clean refuses a working tree with uncommitted or untracked changes: the
+// review runs in the working copy and must see exactly the pushed commit.
+func (a *Author) clean(ctx context.Context) error {
+	if out, err := gitOut(ctx, a.Dir, "status", "--porcelain", "--untracked-files=all"); err != nil {
+		return err
+	} else if out != "" {
+		return temporal.NewNonRetryableApplicationError(
+			"the working copy has uncommitted or untracked changes; commit or stash them, then run tardis request again:\n"+tail(out),
+			"Malformed", nil)
+	}
+	return nil
 }
 
 // Notify prints one event for the author.

@@ -46,15 +46,21 @@ func authorRepo(t *testing.T) (*Author, func(...string) string) {
 	return &Author{Dir: dir, Remote: "origin", Branch: "feature", Tool: "anthropic/a/b"}, git
 }
 
+// reviewIn is an AuthorReviewIn for gate on the current HEAD, pinned to main.
+func reviewIn(git func(...string) string, gate string) AuthorReviewIn {
+	tip := git("rev-parse", "HEAD")
+	return AuthorReviewIn{Gate: gate, Base: "main", BaseID: git("rev-parse", "main"), Code: tip, Tip: tip}
+}
+
 func TestAuthorReviewRetryResumesFromItsOwnCheck(t *testing.T) {
 	a, git := authorRepo(t)
-	tip := git("rev-parse", "HEAD")
+	in := reviewIn(git, "simplify")
 	// The first attempt wrote its check, then lost the push.
 	check, err := chain.Commit(a.Dir, "simplify", "ok", a.Tool)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := a.AuthorReview(context.Background(), AuthorReviewIn{Gate: "simplify", Base: "main", Code: tip, Tip: tip})
+	got, err := a.AuthorReview(context.Background(), in)
 	if err != nil {
 		t.Fatalf("retry: %v", err)
 	}
@@ -65,10 +71,44 @@ func TestAuthorReviewRetryResumesFromItsOwnCheck(t *testing.T) {
 
 func TestAuthorReviewRefusesARealMove(t *testing.T) {
 	a, git := authorRepo(t)
-	tip := git("rev-parse", "HEAD")
+	in := reviewIn(git, "simplify")
 	git("commit", "-q", "--allow-empty", "-m", "ship-check: verify") // not this gate's check
-	_, err := a.AuthorReview(context.Background(), AuthorReviewIn{Gate: "simplify", Base: "main", Code: tip, Tip: tip})
+	_, err := a.AuthorReview(context.Background(), in)
 	if err == nil || !strings.Contains(err.Error(), "branch moved") {
 		t.Errorf("err = %v, want branch moved", err)
+	}
+}
+
+func TestAuthorReviewRefusesADirtyWorkingCopy(t *testing.T) {
+	a, git := authorRepo(t)
+	if err := os.WriteFile(filepath.Join(a.Dir, "fix.go"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := a.AuthorReview(context.Background(), reviewIn(git, "simplify"))
+	if err == nil || !strings.Contains(err.Error(), "uncommitted or untracked") {
+		t.Errorf("err = %v, want a dirty-tree refusal", err)
+	}
+}
+
+func TestAuthorReviewFetchesThePinnedBase(t *testing.T) {
+	// The base moved on the remote after this clone last fetched it; the run
+	// is pinned to the new commit, which the author must fetch, not refuse.
+	a, git := authorRepo(t)
+	in := reviewIn(git, "simplify")
+	other := t.TempDir()
+	if out, err := exec.Command("git", "clone", "-q", git("remote", "get-url", "origin"), other).CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if out, err := exec.Command("sh", "-c", "cd "+other+" && git commit -q --allow-empty -m moved && git push -q origin main && git rev-parse HEAD").Output(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	} else {
+		in.BaseID = strings.TrimSpace(string(out))
+	}
+	if _, err := chain.Commit(a.Dir, "simplify", "ok", a.Tool); err != nil {
+		t.Fatal(err)
+	}
+	in.Tip = in.Code // the retry path: HEAD is this gate's check on in.Tip
+	if _, err := a.AuthorReview(context.Background(), in); err != nil {
+		t.Errorf("pinned base %s not fetched: %v", in.BaseID, err)
 	}
 }
