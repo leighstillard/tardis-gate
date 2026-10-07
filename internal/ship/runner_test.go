@@ -153,16 +153,27 @@ func TestOpenPRRefusesAMovedBase(t *testing.T) {
 		_, err := r.OpenPR(ctx, OpenPRIn{RepoURL: url, Branch: "feature", Base: "main", BaseID: baseID, Head: check})
 		return err
 	}
+	var ae *temporal.ApplicationError
+	if err := open(base); !errors.As(err, &ae) || ae.Type() != "Rejected" {
+		t.Errorf("open before any re-run: err = %v; want Rejected", err)
+	}
+	if v, err := r.Rerun(ctx, RerunIn{RepoURL: url, Base: "main", BaseID: base, Tip: check, Gate: "simplify"}); err != nil || !v.Pass {
+		t.Fatalf("rerun: %+v, %v", v, err)
+	}
 	if err := open(base); err != nil {
-		t.Fatalf("open on the resolved base: %v", err)
+		t.Fatalf("open on the resolved base after a pass: %v", err)
 	}
 	w := t.TempDir()
 	run(t, "git", "-C", w, "clone", "-q", url, ".")
 	run(t, "git", "-C", w, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "main moves")
 	run(t, "git", "-C", w, "push", "-q", "origin", "main")
-	var ae *temporal.ApplicationError
 	if err := open(base); !errors.As(err, &ae) || ae.Type() != "BaseMoved" {
 		t.Errorf("open after main moved: err = %v; want BaseMoved", err)
+	}
+	// A pass earned on the old base opens nothing on the new one.
+	now := strings.TrimSpace(run(t, "git", "-C", w, "rev-parse", "HEAD"))
+	if err := open(now); !errors.As(err, &ae) || ae.Type() != "Rejected" {
+		t.Errorf("open on the new base with only an old-base pass: err = %v; want Rejected", err)
 	}
 }
 

@@ -178,7 +178,7 @@ func request(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	defer release()
-	return attach(c, wfID, *af.repo, *af.remote, in.Branch, *af.tool, stdout, stderr)
+	return attach(c, wfID, *af.repo, *af.remote, in.Branch, *af.tool, head, stdout, stderr)
 }
 
 // lockAttach makes this process the one tardis attached to the working copy,
@@ -234,12 +234,13 @@ func wait(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	defer c.Close()
-	return attach(c, wfID, *af.repo, *af.remote, in.Branch, *af.tool, stdout, stderr)
+	return attach(c, wfID, *af.repo, *af.remote, in.Branch, *af.tool, "", stdout, stderr)
 }
 
 // attach serves the run's workflow and author activities until a terminal
-// event: 0 when the PR is open, 1 when a gate rejected or failed.
-func attach(c client.Client, wfID, repo, remote, branch, tool string, stdout, stderr io.Writer) int {
+// event about head ("" for any): 0 when the PR is open, 1 when a gate
+// rejected or failed.
+func attach(c client.Client, wfID, repo, remote, branch, tool, head string, stdout, stderr io.Writer) int {
 	events := make(chan ship.Event, 1)
 	a := &ship.Author{Dir: repo, Remote: remote, Branch: branch, Tool: tool, Exec: executor.Local{}, Out: stdout, Events: events}
 
@@ -264,7 +265,7 @@ func attach(c client.Client, wfID, repo, remote, branch, tool string, stdout, st
 	for {
 		select {
 		case e := <-events:
-			if e.Kind != "completed" {
+			if e.Kind != "completed" && about(repo, head, e) {
 				return 1
 			}
 			// A head requested as the run finished starts it again, so stay
@@ -279,6 +280,19 @@ func attach(c client.Client, wfID, repo, remote, branch, tool string, stdout, st
 			return 130
 		}
 	}
+}
+
+// about reports whether e concerns head: its commit contains head. A
+// notification from an earlier pass, delivered again because activities are
+// at-least-once, does not, and must not end the attachment for a new head.
+func about(repo, head string, e ship.Event) bool {
+	if head == "" || e.SHA == "" {
+		return true
+	}
+	cmd := exec.Command("git", "--no-replace-objects", "-C", repo, "merge-base", "--is-ancestor", head, e.SHA)
+	cmd.Env = chain.GitEnv()
+	var ee *exec.ExitError
+	return !(errors.As(cmd.Run(), &ee) && ee.ExitCode() == 1) // exit 1: not an ancestor
 }
 
 func runner(args []string, stdout, stderr io.Writer) int {

@@ -190,19 +190,28 @@ func (r *Runner) Resolve(ctx context.Context, in ResolveIn) (ResolveOut, error) 
 	if err != nil {
 		return ResolveOut{}, err
 	}
-	m, err := manifest.LoadRev(dir, baseID)
-	if err != nil {
-		return ResolveOut{}, fmt.Errorf("manifest on %s: %w", base, err)
-	}
-	changed, err := manifest.Changed(dir, baseID, in.SHA)
+	gates, err := gatesFor(dir, base, baseID, in.SHA)
 	if err != nil {
 		return ResolveOut{}, err
 	}
 	out := ResolveOut{Base: base, BaseID: baseID}
-	for _, g := range m.Resolve(changed) {
+	for _, g := range gates {
 		out.Gates = append(out.Gates, GateInfo{Name: g.Name, Timeout: g.Timeout, Retry: g.Retry})
 	}
 	return out, nil
+}
+
+// gatesFor lists the gates that apply to sha under baseID's manifest.
+func gatesFor(dir, base, baseID, sha string) ([]manifest.Gate, error) {
+	m, err := manifest.LoadRev(dir, baseID)
+	if err != nil {
+		return nil, fmt.Errorf("manifest on %s: %w", base, err)
+	}
+	changed, err := manifest.Changed(dir, baseID, sha)
+	if err != nil {
+		return nil, err
+	}
+	return m.Resolve(changed), nil
 }
 
 // Attest judges the check commits for gates on tip.
@@ -334,6 +343,35 @@ func (r *Runner) OpenPR(ctx context.Context, in OpenPRIn) (string, error) {
 	} else if now != in.BaseID {
 		return "", temporal.NewNonRetryableApplicationError(
 			in.Base+" is at "+now+", not "+in.BaseID+", where the gates were resolved", "BaseMoved", nil)
+	}
+	if err := checkBase(ctx, dir, in.Base, in.BaseID); err != nil {
+		return "", err
+	}
+	// The workflow is not trusted to say the gates passed. Every gate the
+	// current base requires must hold a valid check on this head and a pass
+	// this runner recorded on this base: one earned on any other base opens
+	// nothing.
+	gates, err := gatesFor(dir, in.Base, in.BaseID, in.Head)
+	if err != nil {
+		return "", err
+	}
+	for _, g := range gates {
+		st, err := chain.Verify(dir, in.BaseID, in.Head, []string{g.Name})
+		if err != nil {
+			return "", err
+		}
+		key, err := passKey(dir, in.RepoURL, g.Name, in.BaseID, in.Head)
+		if err != nil {
+			return "", err
+		}
+		passed, err := r.hasPass(key)
+		if err != nil {
+			return "", err
+		}
+		if st[g.Name] != chain.Valid || !passed {
+			return "", temporal.NewNonRetryableApplicationError(fmt.Sprintf(
+				"refusing to open a PR: %s on %.12s: chain %s, re-run passed here on %.12s: %v", g.Name, in.Head, st[g.Name], in.BaseID, passed), "Rejected", nil)
+		}
 	}
 	fmt.Fprintf(r.Log, "open-pr %s into %s at %s\n", in.Branch, in.Base, in.Head)
 	return "local:" + in.Branch + "@" + in.Head[:min(12, len(in.Head))], nil
