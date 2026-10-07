@@ -46,7 +46,11 @@ func (f *fake) register(env *testsuite.TestWorkflowEnvironment) {
 		if in.Base != "main" || in.BaseID != "b0" {
 			return "", fmt.Errorf("author review got base %q at %q, want the resolved main at b0", in.Base, in.BaseID)
 		}
-		f.log("author:" + in.Gate + "@" + in.Code)
+		fresh := ""
+		if in.Fresh {
+			fresh = " fresh"
+		}
+		f.log("author:" + in.Gate + "@" + in.Code + fresh)
 		return in.Tip + "+" + in.Gate, nil // a new check commit on top
 	})
 	reg(ActAttest, func(_ context.Context, in AttestIn) (map[string]string, error) {
@@ -226,7 +230,7 @@ func TestBaseMovedAtOpenPRReviewsAgain(t *testing.T) {
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"author:simplify@c1", "rerun:simplify@c1+simplify", "author:simplify@c1+simplify", "rerun:simplify@c1+simplify+simplify"}
+	want := []string{"author:simplify@c1", "rerun:simplify@c1+simplify", "author:simplify@c1+simplify fresh", "rerun:simplify@c1+simplify+simplify"}
 	if !reflect.DeepEqual(f.calls, want) || f.openPRs != 2 {
 		t.Errorf("calls %v, OpenPR %d; want the gates again on the same head, then a PR", f.calls, f.openPRs)
 	}

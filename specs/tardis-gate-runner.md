@@ -36,6 +36,8 @@ context and a different vendor, and only its `tardis/<gate>` check run counts.
 
 ## No-gos
 - Runner never writes to the branch, never pushes, never holds the author's token.
+- The re-run never sees the runner's keys: it runs as its own unprivileged user in a
+  sandbox with an empty HOME and only the provider endpoint reachable.
 - No provider call for a `must_differ_from` gate when vendors match or are unlisted.
 - Check runs are posted only by the App; `tardis` on a dev machine has no path to do it.
 - The blind review never sees the author's summary; only the judge call does.

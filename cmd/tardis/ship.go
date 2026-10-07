@@ -121,7 +121,7 @@ func repoID(remoteURL string) string {
 func request(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("request", flag.ContinueOnError)
 	af := addAuthorFlags(fs)
-	pos, code, ok := parse(fs, "request [<sha>] [--tool <vendor/tool/model>]", args, countPositional(args), stderr)
+	pos, code, ok := parseRange(fs, "request [<sha>] [--tool <vendor/tool/model>]", args, 0, 1, stderr)
 	if !ok {
 		return code
 	}
@@ -349,13 +349,6 @@ func workflowWorker(c client.Client) worker.Worker {
 	w := worker.New(c, ship.WorkflowQueue, worker.Options{})
 	w.RegisterWorkflowWithOptions(ship.Ship, workflow.RegisterOptions{Name: ship.WorkflowName})
 	return w
-}
-
-func countPositional(args []string) int {
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		return 1
-	}
-	return 0
 }
 
 func gitLine(dir string, args ...string) (string, error) {

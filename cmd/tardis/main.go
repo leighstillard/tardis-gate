@@ -68,6 +68,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 // `tardis chain verify --repo r main HEAD --gates a,b`. On failure it returns
 // the exit code: 0 for -h, 2 for a usage error.
 func parse(fs *flag.FlagSet, synopsis string, args []string, npos int, stderr io.Writer) ([]string, int, bool) {
+	return parseRange(fs, synopsis, args, npos, npos, stderr)
+}
+
+// parseRange is parse for between min and max positional arguments.
+func parseRange(fs *flag.FlagSet, synopsis string, args []string, min, max int, stderr io.Writer) ([]string, int, bool) {
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, "usage: tardis %s\n", synopsis)
@@ -86,8 +91,12 @@ func parse(fs *flag.FlagSet, synopsis string, args []string, npos int, stderr io
 		}
 		pos, args = append(pos, args[0]), args[1:]
 	}
-	if len(pos) != npos {
-		fmt.Fprintf(stderr, "%s: want %d argument(s), got %d\n", fs.Name(), npos, len(pos))
+	if len(pos) < min || len(pos) > max {
+		want := fmt.Sprint(min)
+		if max != min {
+			want = fmt.Sprintf("%d to %d", min, max)
+		}
+		fmt.Fprintf(stderr, "%s: want %s argument(s), got %d\n", fs.Name(), want, len(pos))
 		fs.Usage()
 		return nil, 2, false
 	}

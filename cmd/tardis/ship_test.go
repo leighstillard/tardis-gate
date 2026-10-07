@@ -58,6 +58,24 @@ func TestAboutIgnoresAnEarlierPass(t *testing.T) {
 	}
 }
 
+func TestRequestTakesTheSHAAnywhere(t *testing.T) {
+	// Argument parsing must accept the SHA before or after flags; the run
+	// then stops at the repository check, which is all this test needs.
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"request", "HEAD", "--tool", "a/b/c", "--repo", dir},
+		{"request", "--tool", "a/b/c", "--repo", dir, "HEAD"},
+		{"request", "--tool", "a/b/c", "--repo", dir},
+	} {
+		if _, _, stderr := runCLI(args...); strings.Contains(stderr, "argument") {
+			t.Errorf("%v: %q, want the arguments accepted", args, stderr)
+		}
+	}
+	if code, _, stderr := runCLI("request", "x", "y", "--tool", "a/b/c"); code != 2 || !strings.Contains(stderr, "want 0 to 1 argument(s), got 2") {
+		t.Errorf("two SHAs: exit %d err %q", code, stderr)
+	}
+}
+
 func TestRepoIDKeepsRepositoriesApart(t *testing.T) {
 	for _, u := range []string{"https://github.com/Owner/Repo.git", "git@github.com:owner/repo.git", "ssh://git@github.com/owner/repo"} {
 		if got := repoID(u); got != "owner/repo" {

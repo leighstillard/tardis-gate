@@ -106,5 +106,8 @@ type (
 	RerunIn        struct{ RepoURL, Base, BaseID, Tip, Gate string }
 	CheckIn        struct{ RepoURL, Base, BaseID, SHA, Gate, Conclusion, Summary string }
 	OpenPRIn       struct{ RepoURL, Branch, Base, BaseID, Head string }
-	AuthorReviewIn struct{ Gate, Base, BaseID, Code, Tip string }
+	AuthorReviewIn struct {
+		Gate, Base, BaseID, Code, Tip string
+		Fresh                         bool // review even if a valid check is already there
+	}
 )

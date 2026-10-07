@@ -263,12 +263,19 @@ func (r *Runner) Rerun(ctx context.Context, in RerunIn) (Verdict, error) {
 	if _, err := gitOut(ctx, dir, "clean", "-q", "-ffdx"); err != nil {
 		return Verdict{}, err
 	}
+	home, err := os.MkdirTemp("", "tardis-rerun-")
+	if err != nil {
+		return Verdict{}, err
+	}
+	defer os.RemoveAll(home)
 	res, err := r.Exec.Run(ctx, executor.Job{
 		Argv: r.RerunCmd,
 		Dir:  dir,
-		Env: []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"),
+		Env: []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home,
 			"TARDIS_GATE=" + in.Gate, "TARDIS_SHA=" + in.Tip, "TARDIS_BASE=" + in.BaseID},
-		Clean: true, // none of the runner's own credentials
+		// None of the runner's environment, and an empty HOME. It still runs
+		// as the runner's user; the provider re-run (build 4) gets a sandbox.
+		Clean: true,
 	}, func(string) {})
 	if err != nil {
 		return Verdict{}, err

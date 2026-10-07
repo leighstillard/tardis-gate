@@ -91,14 +91,17 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 	heads := workflow.GetSignalChannel(ctx, SignalNewHead)
 	authorQ := AuthorQueue(workflow.GetInfo(ctx).WorkflowExecution.ID)
 
+	fresh := false // the next pass reviews afresh: the base, and so its policy, moved
 	for {
 		head = latest(heads, head)
 		notify(ctx, authorQ, Event{Kind: "started", SHA: head})
 
 		passCtx, cancel := workflow.WithCancel(ctx)
 		done := workflow.NewBufferedChannel(ctx, 1)
+		passFresh := fresh
+		fresh = false
 		workflow.Go(passCtx, func(gctx workflow.Context) {
-			done.Send(gctx, runGates(gctx, in, head, authorQ))
+			done.Send(gctx, runGates(gctx, in, head, authorQ, passFresh))
 		})
 		var res outcome
 		var sig NewHead
@@ -128,7 +131,7 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 			if errors.As(err, &ae) && ae.Type() == "BaseMoved" {
 				// The base's policy may have changed: same head, gates again.
 				notify(ctx, authorQ, Event{Kind: "base-moved", SHA: res.Tip, Detail: "reviewing again against the new base"})
-				head = res.Tip
+				head, fresh = res.Tip, true
 				continue
 			}
 			moved := errors.As(err, &ae) && ae.Type() == "BranchMoved"
@@ -169,7 +172,7 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 
 // runGates makes one pass over the gates for head. It never returns an error:
 // every way a pass can stop is an outcome the author is told about.
-func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
+func runGates(ctx workflow.Context, in Input, head, authorQ string, fresh bool) outcome {
 	stop := func(gate, kind, why, tip string) outcome {
 		if ctx.Err() != nil {
 			return outcome{Canceled: true}
@@ -198,7 +201,7 @@ func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
 	for _, g := range gates {
 		names = append(names, g.Name)
 		if err := workflow.ExecuteActivity(gateRetries(authorOpts(ctx, authorQ, g.Timeout), g.Retry), ActAuthorReview,
-			AuthorReviewIn{Gate: g.Name, Base: res.Base, BaseID: res.BaseID, Code: head, Tip: tip}).Get(ctx, &tip); err != nil {
+			AuthorReviewIn{Gate: g.Name, Base: res.Base, BaseID: res.BaseID, Code: head, Tip: tip, Fresh: fresh}).Get(ctx, &tip); err != nil {
 			return stop(g.Name, "failed", "author review: "+reason(err), tip)
 		}
 		var st map[string]string
