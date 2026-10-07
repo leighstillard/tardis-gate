@@ -104,6 +104,8 @@ func TestParseResolvedFailsClosed(t *testing.T) {
 		`{"base":"a","head":"b","gatez":["x"]}`,
 		`{"base":"a","head":"b","gates":[],"extra":1}`,
 		`{"base":"a","head":"b","gates":[]} {}`,
+		`{"base":"a","head":"b","gates":[]}]`,
+		`{"base":"a","head":"b","gates":[]}}`,
 		`{"head":"b","gates":[]}`,
 	} {
 		if _, err := parseResolved(s); err == nil {

@@ -237,7 +237,8 @@ func parseResolved(s string) (resolved, error) {
 	if err := dec.Decode(&r); err != nil {
 		return r, err
 	}
-	if dec.More() {
+	// More would miss a stray ] or }; nothing at all may follow the object.
+	if _, err := dec.Token(); err != io.EOF {
 		return r, errors.New("trailing data")
 	}
 	if r.Base == "" || r.Head == "" || r.Gates == nil {
@@ -273,7 +274,11 @@ func resolveGates(repo, base, head string) (ids [2]string, names []string, code 
 	if errors.Is(err, manifest.ErrNotEnrolled) {
 		return ids, nil, 1, fmt.Errorf("%s is not enrolled: commit %s to it first; enrolment is an operator step that tardis does not gate", base, manifest.ConfigPath)
 	} else if err != nil {
-		return ids, nil, 1, errors.New(strings.ReplaceAll(err.Error(), "\n", "; "))
+		code := 1 // the manifest is wrong
+		if ge := (*manifest.GitError)(nil); errors.As(err, &ge) {
+			code = 2 // git could not read it
+		}
+		return ids, nil, code, errors.New(strings.ReplaceAll(err.Error(), "\n", "; "))
 	}
 	changed, err := manifest.Changed(repo, ids[0], ids[1])
 	if err != nil {

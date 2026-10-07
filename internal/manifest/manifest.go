@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -89,6 +90,14 @@ func Load(root string) (*Manifest, error) {
 		// can't see. A submodule is a directory holding a .git entry or, if
 		// not yet initialised, a gitlink in the index over an empty directory.
 		for _, q := range prefixes(p) {
+			// Spelled exactly as on disk: a case- or normalization-insensitive
+			// filesystem would open Tools/Lint for tools/lint, which git, and
+			// so LoadRev, would not.
+			if ok, err := exactName(r, q); err != nil {
+				return nil, err
+			} else if !ok {
+				return nil, fs.ErrNotExist
+			}
 			if indexGitlink(root, q) {
 				return nil, fmt.Errorf("%s is a submodule; not supported", q)
 			}
@@ -112,6 +121,22 @@ func Load(root string) (*Manifest, error) {
 		defer f.Close()
 		return io.ReadAll(io.LimitReader(f, maxFile+1))
 	})
+}
+
+// exactName reports whether q's last element is spelled exactly as its
+// directory lists it.
+func exactName(r *os.Root, q string) (bool, error) {
+	dir, name := path.Split(q)
+	d, err := r.Open(filepath.FromSlash(path.Clean("./" + dir)))
+	if err != nil {
+		return false, err
+	}
+	defer d.Close()
+	names, err := d.Readdirnames(-1)
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(names, name), nil
 }
 
 // LoadRev reads the manifest as committed at rev, so the policy that governs a
@@ -403,6 +428,12 @@ func indexGitlink(root, q string) bool {
 	return err == nil && path == q && strings.HasPrefix(meta, "160000 ")
 }
 
+// GitError is git failing to read the repository, as opposed to a manifest
+// that is wrong.
+type GitError struct{ msg string }
+
+func (e *GitError) Error() string { return e.msg }
+
 // gitOut returns git's raw stdout. Replacement objects are off: a local
 // refs/replace entry must not change what a commit ID means.
 func gitOut(dir string, args ...string) (string, error) {
@@ -411,7 +442,7 @@ func gitOut(dir string, args ...string) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git %s: %s", args[0], strings.TrimSpace(stderr.String()))
+		return "", &GitError{fmt.Sprintf("git %s: %s", args[0], strings.TrimSpace(stderr.String()))}
 	}
 	return stdout.String(), nil
 }

@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -377,8 +378,27 @@ func TestLoadRevFailsClosedOnAMissingObject(t *testing.T) {
 	if err := os.Remove(filepath.Join(root, ".git", "objects", tree[:2], tree[2:])); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadRev(root, "main"); err == nil {
-		t.Error("LoadRev succeeded with the override's tree missing; want an error, not the reference gate")
+	_, err = LoadRev(root, "main")
+	if ge := (*GitError)(nil); !errors.As(err, &ge) {
+		t.Errorf("LoadRev with the override's tree missing: err = %v; want a GitError, not the reference gate", err)
+	}
+}
+
+func TestExactNameRefusesAnotherSpelling(t *testing.T) {
+	// A case-insensitive filesystem would open Tools for tools; git would not.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "tools", "lint"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	for q, want := range map[string]bool{"tools": true, "tools/lint": true, "Tools": false, "tools/Lint": false} {
+		if got, err := exactName(r, q); err != nil || got != want {
+			t.Errorf("exactName(%q) = %v, %v; want %v", q, got, err, want)
+		}
 	}
 }
 
