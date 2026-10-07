@@ -308,6 +308,30 @@ func TestLogOutputEncodingDoesNotRecodeGates(t *testing.T) {
 	want(t, r.verify("café"), "café", Valid)
 }
 
+func TestCommitEncodingDoesNotBreakUnicodeGates(t *testing.T) {
+	r := newRepo(t)
+	r.branch()
+	r.code("A")
+	r.git("config", "i18n.commitEncoding", "ISO-8859-1")
+	if _, err := Commit(r.dir, "café", "ok", "anthropic/a/b"); err != nil {
+		t.Fatal(err)
+	}
+	want(t, r.verify("café"), "café", Valid)
+}
+
+func TestCommitSeesAStagedFileNamedWithSpaces(t *testing.T) {
+	r := newRepo(t)
+	r.branch()
+	r.code("A")
+	if err := os.WriteFile(filepath.Join(r.dir, "   "), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r.git("add", "--", "   ")
+	if _, err := Commit(r.dir, "simplify", "ok", "anthropic/a/b"); err == nil || !strings.Contains(err.Error(), "staged") {
+		t.Errorf("err = %v, want the staged-changes refusal", err)
+	}
+}
+
 func TestCommitReportsGitErrorsNotStagedChanges(t *testing.T) {
 	newRepo(t) // isolates git config
 	_, err := Commit(t.TempDir(), "simplify", "ok", "anthropic/a/b")

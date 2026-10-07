@@ -58,7 +58,7 @@ func Commit(dir, gate, summary, tool string) (string, error) {
 	}
 	// The check commit never includes the index, but staged work next to a
 	// check is almost always a mistake; say so rather than leave it behind.
-	if staged, err := git(dir, "diff", "--cached", "--name-only"); err != nil {
+	if staged, err := gitRaw(dir, "diff", "--cached", "--name-only", "-z"); err != nil {
 		return "", err
 	} else if staged != "" {
 		return "", errors.New("staged changes present; commit or unstage them first")
@@ -81,7 +81,9 @@ func Commit(dir, gate, summary, tool string) (string, error) {
 	// The trailers get their own paragraph so they never merge with a
 	// trailer-like last line of the summary.
 	trailers := TrailerCheck + ": " + gate + "\n" + TrailerOf + ": " + of + "\n" + TrailerTool + ": " + tool
-	sha, err := git(dir, "commit-tree", before+"^{tree}", "-p", before,
+	// UTF-8 pinned: another commit encoding would add a header that makes git
+	// recode the subject but not the raw trailers it is checked against.
+	sha, err := git(dir, "-c", "i18n.commitEncoding=UTF-8", "commit-tree", before+"^{tree}", "-p", before,
 		"-m", SubjectPrefix+gate, "-m", summary, "-m", trailers)
 	if err != nil {
 		return "", err
