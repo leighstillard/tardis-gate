@@ -38,22 +38,30 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 // parse parses flags that may follow positional arguments, as in
-// `tardis chain verify main HEAD --gates a,b`.
-func parse(fs *flag.FlagSet, args []string, npos int, stderr io.Writer) ([]string, bool) {
+// `tardis chain verify main HEAD --gates a,b`. On failure it returns the exit
+// code: 0 for -h, 2 for a usage error.
+func parse(fs *flag.FlagSet, synopsis string, args []string, npos int, stderr io.Writer) ([]string, int, bool) {
 	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, "usage: tardis %s\n", synopsis)
+		fs.PrintDefaults()
+	}
 	var pos []string
 	for len(pos) < npos && len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		pos, args = append(pos, args[0]), args[1:]
 	}
-	if err := fs.Parse(args); err != nil {
-		return nil, false
+	if err := fs.Parse(args); err == flag.ErrHelp {
+		return nil, 0, false
+	} else if err != nil {
+		return nil, 2, false
 	}
 	pos = append(pos, fs.Args()...)
 	if len(pos) != npos {
 		fmt.Fprintf(stderr, "%s: want %d argument(s), got %d\n", fs.Name(), npos, len(pos))
-		return nil, false
+		fs.Usage()
+		return nil, 2, false
 	}
-	return pos, true
+	return pos, 0, true
 }
 
 func checkCommit(args []string, stdout, stderr io.Writer) int {
@@ -61,9 +69,9 @@ func checkCommit(args []string, stdout, stderr io.Writer) int {
 	summaryFile := fs.String("summary-file", "", "file holding the review summary (≤40 lines)")
 	tool := fs.String("tool", "", "<vendor>/<tool>/<model> that ran the review")
 	repo := fs.String("repo", ".", "repository directory")
-	pos, ok := parse(fs, args, 1, stderr)
+	pos, code, ok := parse(fs, "check commit <gate> --summary-file <file> --tool <vendor/tool/model>", args, 1, stderr)
 	if !ok {
-		return 2
+		return code
 	}
 	if *summaryFile == "" || *tool == "" {
 		fmt.Fprintln(stderr, "check commit: --summary-file and --tool are required")
@@ -87,9 +95,9 @@ func chainVerify(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("chain verify", flag.ContinueOnError)
 	gates := fs.String("gates", "", "comma-separated gates that must be valid")
 	repo := fs.String("repo", ".", "repository directory")
-	pos, ok := parse(fs, args, 2, stderr)
+	pos, code, ok := parse(fs, "chain verify <base> <head> --gates <a,b,c>", args, 2, stderr)
 	if !ok {
-		return 2
+		return code
 	}
 	var list []string
 	for _, g := range strings.Split(*gates, ",") {

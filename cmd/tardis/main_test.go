@@ -91,4 +91,10 @@ func TestUsageErrorsExit2(t *testing.T) {
 			t.Errorf("%v: exit %d, want 2", args, code)
 		}
 	}
+	for _, args := range [][]string{{"chain", "verify", "-h"}, {"check", "commit", "-h"}} {
+		code, _, stderr := runCLI(args...)
+		if code != 0 || !strings.Contains(stderr, "usage: tardis "+args[0]) {
+			t.Errorf("%v: exit %d, stderr %q; want 0 and a usage line", args, code, stderr)
+		}
+	}
 }
