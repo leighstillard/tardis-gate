@@ -97,6 +97,24 @@ func TestUnmovedCatchesAMovedHead(t *testing.T) {
 	}
 }
 
+func TestParseResolvedFailsClosed(t *testing.T) {
+	for _, s := range []string{
+		`{"base":"a","head":"b"}`,
+		`{"base":"a","head":"b","gates":null}`,
+		`{"base":"a","head":"b","gatez":["x"]}`,
+		`{"base":"a","head":"b","gates":[],"extra":1}`,
+		`{"base":"a","head":"b","gates":[]} {}`,
+		`{"head":"b","gates":[]}`,
+	} {
+		if _, err := parseResolved(s); err == nil {
+			t.Errorf("parseResolved(%s) accepted", s)
+		}
+	}
+	if r, err := parseResolved(`{"base":"a","head":"b","gates":[]}`); err != nil || r.Gates == nil {
+		t.Errorf("explicit empty list: %+v, %v", r, err)
+	}
+}
+
 func TestChainVerifyEmptyResolution(t *testing.T) {
 	dir, git := gitRepo(t)
 	none := fmt.Sprintf(`{"base":%q,"head":%q,"gates":[]}`, git("rev-parse", "main"), git("rev-parse", "HEAD"))

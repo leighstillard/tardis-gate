@@ -131,8 +131,8 @@ func chainVerify(args []string, stdout, stderr io.Writer) int {
 	} else if v := strings.TrimSpace(*gates); strings.HasPrefix(v, "{") {
 		// manifest resolve's output: the list is only good for the commits it
 		// was resolved on, so base and head must still name them.
-		var r resolved
-		if err := json.Unmarshal([]byte(v), &r); err != nil || r.Base == "" || r.Head == "" {
+		r, err := parseResolved(v)
+		if err != nil {
 			fmt.Fprintln(stderr, "chain verify: --gates: not manifest resolve output:", err)
 			return 2
 		}
@@ -226,6 +226,24 @@ type resolved struct {
 	Base  string   `json:"base"`
 	Head  string   `json:"head"`
 	Gates []string `json:"gates"`
+}
+
+// parseResolved reads manifest resolve's output strictly: a typo or a missing
+// gates list must not read as "no gates apply" and pass.
+func parseResolved(s string) (resolved, error) {
+	var r resolved
+	dec := json.NewDecoder(strings.NewReader(s))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&r); err != nil {
+		return r, err
+	}
+	if dec.More() {
+		return r, errors.New("trailing data")
+	}
+	if r.Base == "" || r.Head == "" || r.Gates == nil {
+		return r, errors.New("base, head and gates are all required")
+	}
+	return r, nil
 }
 
 // unmoved reports an error if any of refs no longer names the commit pinned
