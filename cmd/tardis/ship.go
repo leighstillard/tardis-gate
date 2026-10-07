@@ -65,11 +65,12 @@ func branchRun(repo, remote string) (ship.Input, string, error) {
 	if err := checkRemote(url); err != nil {
 		return ship.Input{}, "", err
 	}
-	m, err := manifest.Load(repo)
-	if err != nil {
+	// The runner reads the policy from the base branch; this only catches a
+	// working copy that is not enrolled before anything starts.
+	if _, err := manifest.Load(repo); err != nil {
 		return ship.Input{}, "", err
 	}
-	in := ship.Input{RepoURL: url, RepoID: repoID(url), Branch: branch, Base: m.BaseBranch}
+	in := ship.Input{RepoURL: url, RepoID: repoID(url), Branch: branch}
 	return in, ship.WorkflowID(in.RepoID, branch), nil
 }
 

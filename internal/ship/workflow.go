@@ -48,6 +48,16 @@ func authorOpts(ctx workflow.Context, queue string, timeout time.Duration) workf
 	})
 }
 
+// gateRetries applies a gate's retry count from its manifest to the activity
+// that runs that gate's review.
+func gateRetries(ctx workflow.Context, retries int) workflow.Context {
+	opts := workflow.GetActivityOptions(ctx)
+	p := *retry
+	p.MaximumAttempts = int32(retries) + 1 // 0 would mean no limit
+	opts.RetryPolicy = &p
+	return workflow.WithActivityOptions(ctx, opts)
+}
+
 func deliveryOpts(ctx workflow.Context, queue string) workflow.Context {
 	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		TaskQueue:              queue,
@@ -60,6 +70,7 @@ func deliveryOpts(ctx workflow.Context, queue string) workflow.Context {
 // outcome is how one pass over the gates ended.
 type outcome struct {
 	Tip      string // branch tip after the last check commit
+	Base     string // base branch, as resolved
 	Gate     string // gate that stopped the pass, "" if all passed
 	Kind     string // "rejected" or "failed"
 	Reason   string
@@ -108,7 +119,7 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 			}
 			var url string
 			err := workflow.ExecuteActivity(runnerOpts(ctx, 5*time.Minute), ActOpenPR,
-				OpenPRIn{RepoURL: in.RepoURL, Branch: in.Branch, Base: in.Base, Head: res.Tip}).Get(ctx, &url)
+				OpenPRIn{RepoURL: in.RepoURL, Branch: in.Branch, Base: res.Base, Head: res.Tip}).Get(ctx, &url)
 			var ae *temporal.ApplicationError
 			moved := errors.As(err, &ae) && ae.Type() == "BranchMoved"
 			if err != nil && !moved {
@@ -151,14 +162,18 @@ func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
 		if ctx.Err() != nil {
 			return outcome{Canceled: true}
 		}
-		notify(ctx, authorQ, Event{Kind: kind, Gate: gate, SHA: tip, Detail: why})
-		_ = postCheck(ctx, in, "", tip, gate, "failure", why) // best effort: a failure only blocks
+		// Both at once: a dead runner must not hold up the author's news, nor
+		// an absent author the failure check.
+		n := workflow.ExecuteActivity(deliveryOpts(ctx, authorQ), ActNotify, Event{Kind: kind, Gate: gate, SHA: tip, Detail: why})
+		c := postCheck(ctx, in, "", "", tip, gate, "failure", why)
+		_ = n.Get(ctx, nil)
+		_ = c.Get(ctx, nil) // best effort: a failure only blocks
 		return outcome{Gate: gate, Kind: kind, Reason: why, Tip: tip}
 	}
 
 	var res ResolveOut
 	if err := workflow.ExecuteActivity(runnerOpts(ctx, 5*time.Minute), ActResolve,
-		ResolveIn{RepoURL: in.RepoURL, Base: in.Base, SHA: head}).Get(ctx, &res); err != nil {
+		ResolveIn{RepoURL: in.RepoURL, SHA: head}).Get(ctx, &res); err != nil {
 		return stop("resolve", "failed", reason(err), head)
 	}
 	gates := res.Gates
@@ -167,8 +182,8 @@ func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
 	var names []string
 	for _, g := range gates {
 		names = append(names, g.Name)
-		if err := workflow.ExecuteActivity(authorOpts(ctx, authorQ, g.Timeout), ActAuthorReview,
-			AuthorReviewIn{Gate: g.Name, Base: in.Base, BaseID: res.BaseID, Code: head, Tip: tip}).Get(ctx, &tip); err != nil {
+		if err := workflow.ExecuteActivity(gateRetries(authorOpts(ctx, authorQ, g.Timeout), g.Retry), ActAuthorReview,
+			AuthorReviewIn{Gate: g.Name, Base: res.Base, BaseID: res.BaseID, Code: head, Tip: tip}).Get(ctx, &tip); err != nil {
 			return stop(g.Name, "failed", "author review: "+reason(err), tip)
 		}
 		var st map[string]string
@@ -180,8 +195,8 @@ func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
 			return stop(g.Name, "rejected", "check commit "+st[g.Name], tip)
 		}
 		var v Verdict
-		if err := workflow.ExecuteActivity(runnerOpts(ctx, g.Timeout), ActRerun,
-			RerunIn{RepoURL: in.RepoURL, Base: in.Base, BaseID: res.BaseID, Tip: tip, Gate: g.Name}).Get(ctx, &v); err != nil {
+		if err := workflow.ExecuteActivity(gateRetries(runnerOpts(ctx, g.Timeout), g.Retry), ActRerun,
+			RerunIn{RepoURL: in.RepoURL, Base: res.Base, BaseID: res.BaseID, Tip: tip, Gate: g.Name}).Get(ctx, &v); err != nil {
 			return stop(g.Name, "failed", reason(err), tip)
 		}
 		if !v.Pass {
@@ -205,11 +220,11 @@ func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
 	// for: GitHub shows, and OpenPR reads, the checks on the head only.
 	for _, n := range names {
 		// No PR without its checks: a refused or failed success stops the pass.
-		if err := postCheck(ctx, in, res.BaseID, tip, n, "success", ""); err != nil {
+		if err := postCheck(ctx, in, res.Base, res.BaseID, tip, n, "success", "").Get(ctx, nil); err != nil {
 			return stop(n, "failed", "posting the success check: "+reason(err), tip)
 		}
 	}
-	return outcome{Tip: tip}
+	return outcome{Tip: tip, Base: res.Base}
 }
 
 // reason turns an activity error into words for the author. A timeout means
@@ -231,12 +246,12 @@ func notify(ctx workflow.Context, authorQ string, e Event) {
 	_ = workflow.ExecuteActivity(deliveryOpts(ctx, authorQ), ActNotify, e).Get(ctx, nil)
 }
 
-// postCheck records a tardis/<gate> check run; it waits for a runner if none is up.
-// postCheck asks the runner to post a check. The runner posts a success only
-// for a gate it re-ran and passed itself; the workflow cannot vouch for one.
-func postCheck(ctx workflow.Context, in Input, baseID, sha, gate, conclusion, summary string) error {
+// postCheck asks the runner to post a tardis/<gate> check run, waiting for a
+// runner if none is up. The runner posts a success only for a gate it re-ran
+// and passed itself; the workflow cannot vouch for one.
+func postCheck(ctx workflow.Context, in Input, base, baseID, sha, gate, conclusion, summary string) workflow.Future {
 	return workflow.ExecuteActivity(deliveryOpts(ctx, RunnerQueue), ActPostCheck,
-		CheckIn{RepoURL: in.RepoURL, Base: in.Base, BaseID: baseID, SHA: sha, Gate: gate, Conclusion: conclusion, Summary: summary}).Get(ctx, nil)
+		CheckIn{RepoURL: in.RepoURL, Base: base, BaseID: baseID, SHA: sha, Gate: gate, Conclusion: conclusion, Summary: summary})
 }
 
 // latest drains queued new-head signals and returns the newest head.

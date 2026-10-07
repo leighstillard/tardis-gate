@@ -39,7 +39,6 @@ type Input struct {
 	RepoURL string // what the runner clones
 	RepoID  string // owner/repo, for the workflow ID
 	Branch  string
-	Base    string // base branch name
 	Head    string // the code commit to ship
 }
 
@@ -79,6 +78,7 @@ func (e Event) String() string {
 
 // ResolveOut is the base commit the run is pinned to and the gates that apply.
 type ResolveOut struct {
+	Base   string // the base branch, as the default branch's manifest names it
 	BaseID string // the base branch's commit when resolved; every later step uses it
 	Gates  []GateInfo
 }
@@ -87,6 +87,7 @@ type ResolveOut struct {
 type GateInfo struct {
 	Name    string
 	Timeout time.Duration
+	Retry   int // retries after a failed attempt at the gate's review
 }
 
 // Verdict is the runner's independent judgement of one gate.
@@ -97,7 +98,7 @@ type Verdict struct {
 
 // Activity inputs.
 type (
-	ResolveIn struct{ RepoURL, Base, SHA string }
+	ResolveIn struct{ RepoURL, SHA string }
 	AttestIn  struct {
 		RepoURL, BaseID, Tip string
 		Gates                []string

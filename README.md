@@ -135,6 +135,9 @@ lives. Nothing about a particular repository is built into the framework.
 - **The author's tool is self-reported.** The runner learns which vendor wrote the code
   from the check commit. It checks that against a list the repository owner sets, but it
   cannot prove which model actually ran.
+- **One working copy per branch.** A run hands its author steps to whichever `tardis`
+  is attached to that branch. If two clones of the same branch attach at once, either may
+  get a step; the wrong one fails it and the author has to ask again.
 - **Admins still have the keys.** A repository admin can change the branch rules.
   tardis-gate makes skipping a review visible and deliberate; it doesn't take control
   away from the repository owner.

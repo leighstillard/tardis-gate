@@ -66,9 +66,6 @@ func checkBase(ctx context.Context, dir, base, baseID string) error {
 		return temporal.NewNonRetryableApplicationError(
 			fmt.Sprintf("base %q is not this repository's base branch %q", base, m.BaseBranch), "Malformed", nil)
 	}
-	if baseID == "" {
-		return nil
-	}
 	if _, err := gitOut(ctx, dir, "merge-base", "--is-ancestor", baseID, "origin/"+base); err != nil {
 		return temporal.NewNonRetryableApplicationError(baseID+" was never on "+base, "Malformed", nil)
 	}
@@ -119,7 +116,9 @@ func (r *Runner) sync(ctx context.Context, repoURL string) (string, error) {
 
 // Resolve pins the base branch's current commit and lists the gates that
 // apply to sha under that commit's manifest. Every later step of the pass
-// uses the pinned commit, so the policy cannot change half way through.
+// uses the pinned commit, so the policy cannot change half way through. The
+// base branch is the one the default branch's manifest names, never one the
+// request brings: a branch cannot pick the policy it is held to.
 func (r *Runner) Resolve(ctx context.Context, in ResolveIn) (ResolveOut, error) {
 	defer heartbeat(ctx)()
 	defer r.lock(in.RepoURL)()
@@ -127,24 +126,26 @@ func (r *Runner) Resolve(ctx context.Context, in ResolveIn) (ResolveOut, error) 
 	if err != nil {
 		return ResolveOut{}, err
 	}
-	if err := checkBase(ctx, dir, in.Base, ""); err != nil {
-		return ResolveOut{}, err
+	def, err := manifest.LoadRev(dir, "origin/HEAD")
+	if err != nil {
+		return ResolveOut{}, fmt.Errorf("manifest on the default branch: %w", err)
 	}
-	baseID, err := manifest.CommitID(dir, "origin/"+in.Base)
+	base := def.BaseBranch
+	baseID, err := manifest.CommitID(dir, "origin/"+base)
 	if err != nil {
 		return ResolveOut{}, err
 	}
 	m, err := manifest.LoadRev(dir, baseID)
 	if err != nil {
-		return ResolveOut{}, fmt.Errorf("manifest on %s: %w", in.Base, err)
+		return ResolveOut{}, fmt.Errorf("manifest on %s: %w", base, err)
 	}
 	changed, err := manifest.Changed(dir, baseID, in.SHA)
 	if err != nil {
 		return ResolveOut{}, err
 	}
-	out := ResolveOut{BaseID: baseID}
+	out := ResolveOut{Base: base, BaseID: baseID}
 	for _, g := range m.Resolve(changed) {
-		out.Gates = append(out.Gates, GateInfo{Name: g.Name, Timeout: g.Timeout})
+		out.Gates = append(out.Gates, GateInfo{Name: g.Name, Timeout: g.Timeout, Retry: g.Retry})
 	}
 	return out, nil
 }

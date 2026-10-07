@@ -64,10 +64,14 @@ func TestRunnerPostsSuccessOnlyForItsOwnPass(t *testing.T) {
 }
 
 func TestRunnerRefusesABaseItDidNotChoose(t *testing.T) {
-	r, url, _, check := runnerFixture(t)
+	r, url, base, check := runnerFixture(t)
 	ctx := context.Background()
-	if _, err := r.Resolve(ctx, ResolveIn{RepoURL: url, Base: "feature", SHA: check}); err == nil || !strings.Contains(err.Error(), "not this repository's base branch") {
-		t.Errorf("resolve against feature: err = %v", err)
+	// The base comes from the default branch's manifest, not the request.
+	if out, err := r.Resolve(ctx, ResolveIn{RepoURL: url, SHA: check}); err != nil || out.Base != "main" || out.BaseID != base {
+		t.Errorf("resolve: %+v, %v; want base main at %.7s", out, err, base)
+	}
+	if _, err := r.Rerun(ctx, RerunIn{RepoURL: url, Base: "feature", BaseID: check, Tip: check, Gate: "simplify"}); err == nil || !strings.Contains(err.Error(), "not this repository's base branch") {
+		t.Errorf("rerun against feature: err = %v", err)
 	}
 	// A base commit that main never held (here: the check itself).
 	if _, err := r.Rerun(ctx, RerunIn{RepoURL: url, Base: "main", BaseID: check, Tip: check, Gate: "simplify"}); err == nil || !strings.Contains(err.Error(), "never on main") {

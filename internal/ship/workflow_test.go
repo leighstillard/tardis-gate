@@ -18,6 +18,7 @@ import (
 type fake struct {
 	mu      sync.Mutex
 	gates   []string
+	retry   int      // every gate's retry count
 	calls   []string // "author:<gate>@<code>", "rerun:<gate>@<tip>", ...
 	events  []string
 	checks  []string
@@ -34,15 +35,15 @@ func (f *fake) log(s string) { f.mu.Lock(); f.calls = append(f.calls, s); f.mu.U
 func (f *fake) register(env *testsuite.TestWorkflowEnvironment) {
 	reg := func(name string, fn any) { env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name}) }
 	reg(ActResolve, func(_ context.Context, in ResolveIn) (ResolveOut, error) {
-		out := ResolveOut{BaseID: "b0"}
+		out := ResolveOut{Base: "main", BaseID: "b0"}
 		for _, g := range f.gates {
-			out.Gates = append(out.Gates, GateInfo{Name: g, Timeout: 10 * time.Minute})
+			out.Gates = append(out.Gates, GateInfo{Name: g, Timeout: 10 * time.Minute, Retry: f.retry})
 		}
 		return out, nil
 	})
 	reg(ActAuthorReview, func(_ context.Context, in AuthorReviewIn) (string, error) {
-		if in.BaseID != "b0" {
-			return "", fmt.Errorf("author review got base %q, want the pinned b0", in.BaseID)
+		if in.Base != "main" || in.BaseID != "b0" {
+			return "", fmt.Errorf("author review got base %q at %q, want the resolved main at b0", in.Base, in.BaseID)
 		}
 		f.log("author:" + in.Gate + "@" + in.Code)
 		return in.Tip + "+" + in.Gate, nil // a new check commit on top
@@ -55,8 +56,8 @@ func (f *fake) register(env *testsuite.TestWorkflowEnvironment) {
 		return out, nil
 	})
 	reg(ActRerun, func(_ context.Context, in RerunIn) (Verdict, error) {
-		if in.BaseID != "b0" {
-			return Verdict{}, fmt.Errorf("rerun got base %q, want the pinned b0", in.BaseID)
+		if in.Base != "main" || in.BaseID != "b0" {
+			return Verdict{}, fmt.Errorf("rerun got base %q at %q, want the resolved main at b0", in.Base, in.BaseID)
 		}
 		f.log("rerun:" + in.Gate + "@" + in.Tip)
 		if f.rerun != nil {
@@ -77,6 +78,9 @@ func (f *fake) register(env *testsuite.TestWorkflowEnvironment) {
 		return nil
 	})
 	reg(ActOpenPR, func(_ context.Context, in OpenPRIn) (string, error) {
+		if in.Base != "main" {
+			return "", fmt.Errorf("open PR into %q, want the resolved main", in.Base)
+		}
 		f.mu.Lock()
 		f.openPRs++
 		open := f.onOpen
@@ -106,7 +110,7 @@ func newEnv(t *testing.T, f *fake) *testsuite.TestWorkflowEnvironment {
 	return env
 }
 
-var in = Input{RepoURL: "file:///r.git", RepoID: "local/r", Branch: "feature", Base: "main", Head: "c1"}
+var in = Input{RepoURL: "file:///r.git", RepoID: "local/r", Branch: "feature", Head: "c1"}
 
 func TestAllGatesPassOpensOnePR(t *testing.T) {
 	f := &fake{gates: []string{"simplify", "verify", "review"}}
@@ -271,6 +275,43 @@ func TestRunnerDeathIsReportedAndCheckFails(t *testing.T) {
 	}
 	if !contains(f.checks, "tardis/verify failure") {
 		t.Errorf("checks %v", f.checks)
+	}
+}
+
+func TestGateRetryCountIsHonoured(t *testing.T) {
+	for retry, want := range map[int]int{0: 1, 2: 3} {
+		f := &fake{gates: []string{"simplify"}, retry: retry}
+		f.rerun = func(RerunIn) (Verdict, error) { return Verdict{}, temporal.NewApplicationError("flaky", "Flaky") }
+		env := newEnv(t, f)
+		env.RegisterDelayedCallback(func() { env.CancelWorkflow() }, time.Hour) // it waits for a fix
+		env.ExecuteWorkflow(Ship, in)
+		if got := len(f.calls) - 1; got != want { // calls: one author review, then the reruns
+			t.Errorf("retry %d: %d rerun attempts, want %d (%v)", retry, got, want, f.calls)
+		}
+	}
+}
+
+func TestFailureCheckDoesNotWaitForTheAuthor(t *testing.T) {
+	// The author's notification is stuck until the failure check is posted;
+	// sent one after the other, the check would never go out.
+	f := &fake{gates: []string{"simplify"}}
+	f.rerun = func(RerunIn) (Verdict, error) { return Verdict{Reason: "no"}, nil }
+	posted := false
+	f.onEvent = func(e Event) {
+		if e.Kind != "rejected" {
+			return
+		}
+		for end := time.Now().Add(2 * time.Second); time.Now().Before(end) && !posted; time.Sleep(10 * time.Millisecond) {
+			f.mu.Lock()
+			posted = contains(f.checks, "tardis/simplify failure")
+			f.mu.Unlock()
+		}
+	}
+	env := newEnv(t, f)
+	env.RegisterDelayedCallback(func() { env.CancelWorkflow() }, time.Hour)
+	env.ExecuteWorkflow(Ship, in)
+	if !posted {
+		t.Errorf("failure check not posted while the notification was undelivered; checks %v", f.checks)
 	}
 }
 
