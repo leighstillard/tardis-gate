@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 
+	"github.com/leighstillard/tardis-gate/internal/chain"
 	"github.com/leighstillard/tardis-gate/internal/executor"
 	"github.com/leighstillard/tardis-gate/internal/manifest"
 	"github.com/leighstillard/tardis-gate/internal/ship"
@@ -35,8 +37,20 @@ func addAuthorFlags(fs *flag.FlagSet) authorFlags {
 	}
 }
 
+// checkToolFlag checks --tool before anything is pushed or dialled: this
+// machine's reviews are written as check commits under that name.
+func checkToolFlag(tool string) error {
+	if tool == "" {
+		return errors.New("--tool or $TARDIS_TOOL is required, e.g. anthropic/claude-code/opus")
+	}
+	return chain.CheckTool(tool)
+}
+
 // branchRun works out the run for the branch checked out in repo.
 func branchRun(repo, remote string) (ship.Input, string, error) {
+	if _, err := gitLine(repo, "rev-parse", "--git-dir"); err != nil {
+		return ship.Input{}, "", err
+	}
 	branch, err := gitLine(repo, "symbolic-ref", "--short", "HEAD")
 	if err != nil {
 		return ship.Input{}, "", fmt.Errorf("not on a branch: %w", err)
@@ -69,6 +83,10 @@ func request(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return code
 	}
+	if err := checkToolFlag(*af.tool); err != nil {
+		fmt.Fprintln(stderr, "request:", err)
+		return 2
+	}
 	in, wfID, err := branchRun(*af.repo, *af.remote)
 	if err != nil {
 		fmt.Fprintln(stderr, "request:", err)
@@ -85,10 +103,6 @@ func request(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "request: %s is not HEAD (%s); check it out first\n", pos[0], head)
 			return 2
 		}
-	}
-	if *af.tool == "" {
-		fmt.Fprintln(stderr, "request: --tool or $TARDIS_TOOL is required, e.g. anthropic/claude-code/opus")
-		return 2
 	}
 	if _, err := gitLine(*af.repo, "push", "-q", *af.remote, "HEAD:refs/heads/"+in.Branch); err != nil {
 		fmt.Fprintln(stderr, "request:", err)
@@ -152,6 +166,10 @@ func wait(args []string, stdout, stderr io.Writer) int {
 	af := addAuthorFlags(fs)
 	if _, code, ok := parse(fs, "wait", args, 0, stderr); !ok {
 		return code
+	}
+	if err := checkToolFlag(*af.tool); err != nil {
+		fmt.Fprintln(stderr, "wait:", err)
+		return 2
 	}
 	in, wfID, err := branchRun(*af.repo, *af.remote)
 	if err != nil {
