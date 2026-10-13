@@ -10,7 +10,8 @@ or on a local `temporal server start-dev`.
 
 **Status:** builds 1 to 3 of 5 are in: check-commit evidence (released as v0.1.0), the
 gate manifest and the ship workflow on Temporal. The runner's independent re-run and the
-PR gate are specified below and being built in public.
+PR gate are specified below and being built in public, followed by a traced tier
+(build 6) that ties each review to the worker's session telemetry.
 
 ## The problem
 
@@ -26,6 +27,23 @@ doesn't help here. It can require CI to pass, but it has no idea whether a revie
 
 tardis-gate makes each review leave evidence in the repository. Something other than the
 author then checks that evidence before the change can become a PR.
+
+## Terms
+
+- **Worker**: the agent session that writes the code and runs the reviews on the
+  developer's machine. The code still calls it the author.
+- **Auditor**: the off-machine process, with its own GitHub App, that checks the worker's
+  claims and re-runs the reviews. The code still calls it the runner.
+- **Operator**: the person who enrols a repository, holds the auditor's keys and applies
+  the branch rules.
+- **Gate**: one named review step, defined by a `gate.yml`.
+- **Claim**: the worker's check commit, saying gate X ran on code Y with tool Z.
+- **Trace**: the worker's telemetry for one gate, tied to its claim (traced tier).
+- **Blind review**: the auditor's own re-run of a gate, without the worker's summary.
+- **Judge**: the auditor's comparison of the blind review with the claim.
+- **Verdict**: the auditor's `tardis/<gate>` check run. The only proof that counts.
+- **Round**: one pass through the gates from the first, on one head commit.
+- **Run**: one ship workflow for a branch, from `tardis request` to merge.
 
 ## How a run works
 
@@ -79,6 +97,17 @@ none of them. It can push code and nothing else.
 So an agent on the developer's machine cannot approve its own work, however it behaves.
 The worst it can do is write false claims, and the runner exists to catch those.
 
+### The worker can't talk the auditor round
+
+The worker and the auditor never talk to each other. There is no chat, no agent-to-agent
+protocol such as A2A, and no request the auditor answers. Everything passes through git
+history, GitHub check runs and the Temporal workflow, as data that code checks.
+
+This is deliberate. Agents can be argued with. A worker that could message the auditor
+could plead, explain away a finding or slip instructions into the conversation. The only
+text from the worker the auditor reads is the claim's summary, capped at 40 lines, and
+only the judge sees it. Telemetry is never put in front of a model at all.
+
 ### Independent re-runs, with a different vendor
 
 Running the same review twice with the same model mostly reproduces the same answer. The
@@ -127,6 +156,21 @@ with `.tardis/config.yml`. That file chooses which reviews run and in what order
 paths count as user-facing for the design review, and where the runbook for verification
 lives. Nothing about a particular repository is built into the framework.
 
+## Assurance tiers
+
+Each repository picks how much evidence it wants in `.tardis/config.yml`:
+
+- **basic**: claims in git, the auditor's blind review and judge. Builds 1 to 5.
+- **traced**: adds the worker session's OpenTelemetry. Each claim carries a digest of a
+  scrubbed trace, and the auditor rejects a trace that doesn't show the claimed model
+  reading the diff during that gate. Build 6.
+- **brokered**: the worker's model calls go through a model gateway the auditor reads,
+  so the auditor sees the real requests. Planned once an open-source gateway is chosen.
+
+Telemetry comes from the worker's machine, so the traced tier makes forging much harder,
+not impossible: a forger has to fabricate a whole consistent trace. The brokered tier is
+where faking a review costs about as much as doing one.
+
 ## What it does not protect against
 
 - **A local Temporal server is weaker.** On `temporal server start-dev`, anything on the
@@ -164,6 +208,8 @@ Each spec is one page. Its acceptance checks are commands you can run.
    model providers, and the comparison that decides pass or reject.
 5. [PR gate, ruleset and author events](specs/tardis-gate-pr.md): opening the PR, marking
    other PRs incomplete, the branch rules, and merging.
+6. [Traced tier](specs/tardis-gate-trace.md): binding each claim to the worker's
+   telemetry, and the auditor's checks on it.
 
 ## Install
 
