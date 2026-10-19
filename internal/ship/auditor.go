@@ -11,27 +11,34 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"go.temporal.io/sdk/temporal"
 
+	"github.com/leighstillard/tardis-gate/gates"
 	"github.com/leighstillard/tardis-gate/internal/chain"
-	"github.com/leighstillard/tardis-gate/internal/executor"
+	"github.com/leighstillard/tardis-gate/internal/ghapp"
 	"github.com/leighstillard/tardis-gate/internal/manifest"
+	"github.com/leighstillard/tardis-gate/internal/provider"
+	"github.com/leighstillard/tardis-gate/internal/review"
 )
 
-// Auditor serves the auditor-side activities. This build attests check commits
-// for real; the independent re-run is an operator-configured command, and
-// check runs and PRs are written to the log until the GitHub App lands.
+// Auditor serves the auditor-side activities: it attests check commits,
+// re-runs each gate's review blind through the base's provider, and posts
+// check runs as the GitHub App. PRs are written to the log until build 5.
 type Auditor struct {
-	Repos    map[string]bool // the repository URLs this auditor serves; any other is refused
-	WorkDir  string          // clones live here, one per repository URL
-	RerunCmd []string        // run per gate; exit 0 passes, 1 rejects; empty rejects everything
-	Exec     executor.Executor
-	Log      io.Writer
+	Repos     map[string]bool     // the repository URLs this auditor serves; any other is refused
+	WorkDir   string              // clones live here, one per repository URL
+	App       *ghapp.App          // posts check runs; nil writes them to Log
+	Version   string              // this tardis, named on every check run
+	RerunUser *syscall.Credential // an exec provider runs as this user; without one it is refused
+	Getenv    func(string) string // provider keys; nil is os.Getenv
+	Log       io.Writer
 
 	mu     sync.Mutex
 	locks  map[string]chan struct{} // one per repository URL, guarding its clone
@@ -40,18 +47,65 @@ type Auditor struct {
 	// shared store.
 }
 
-// passKey names what a re-run judged: the gate, the base commit it ran on,
-// the gate's check commit, which fixes the claim and the code under it, and
-// the re-run command, so a pass from a reviewer since replaced counts for
-// nothing. Later checks are empty commits on top, so the final tip of a pass
-// yields the same check commit as the tip the gate was re-run on.
-func (r *Auditor) passKey(dir, repoURL, gate, baseID, tip string) (string, error) {
+// rerun is what judging one gate on one tip takes, all read from the base
+// commit and the gate's check commit.
+type rerun struct {
+	m             *manifest.Manifest
+	gate          manifest.Gate
+	summary, tool string          // the worker's claim
+	cfg           provider.Config // the reviewer, resolved against the claim's vendor
+	key           string          // passKey
+}
+
+// load reads gate's policy at baseID and its valid check commit on tip.
+//
+// The pass key names what a re-run judged: the gate, the base commit it ran
+// on, the gate's check commit, which fixes the claim and the code under it,
+// the reviewer's config and this binary's reference gates, so a pass from a
+// reviewer or prompt since replaced counts for nothing. Later checks are
+// empty commits on top, so the final tip of a pass yields the same check
+// commit as the tip the gate was re-run on.
+func (r *Auditor) load(dir, repoURL, gate, baseID, tip string) (rerun, error) {
+	m, err := manifest.LoadRev(dir, baseID)
+	if err != nil {
+		return rerun{}, fmt.Errorf("manifest on %.12s: %w", baseID, err)
+	}
+	i := slices.IndexFunc(m.Gates, func(g manifest.Gate) bool { return g.Name == gate })
+	if i < 0 {
+		return rerun{}, temporal.NewNonRetryableApplicationError("gate "+gate+" is not enabled on the base", "Malformed", nil)
+	}
 	check, err := chain.CheckCommit(dir, baseID, tip, gate)
 	if err != nil {
-		return "", err
+		return rerun{}, err
 	}
-	sum := sha256.Sum256([]byte(strings.Join(append([]string{repoURL, gate, baseID, check}, r.RerunCmd...), "\x00")))
-	return hex.EncodeToString(sum[:]), nil
+	summary, tool, err := chain.Claim(dir, check)
+	if err != nil {
+		return rerun{}, err
+	}
+	vendor, _, _ := strings.Cut(tool, "/")
+	cfg := m.Provider.Resolve(vendor)
+	sum := sha256.Sum256([]byte(strings.Join([]string{repoURL, gate, baseID, check, cfg.Digest(), gates.Digest, r.Version}, "\x00")))
+	return rerun{m: m, gate: m.Gates[i], summary: summary, tool: tool, cfg: cfg, key: hex.EncodeToString(sum[:])}, nil
+}
+
+// differs is why a must_differ_from gate refuses the claim before any
+// provider call, or "" if the reviewer's vendor differs from the worker's.
+func (rr rerun) differs() string {
+	vendor, _, _ := strings.Cut(rr.tool, "/")
+	pv := rr.cfg.ModelVendor()
+	switch {
+	case len(rr.m.WorkerVendors) == 0:
+		return "same vendor: cannot tell; set worker_vendors in .tardis/config.yml for a must_differ_from gate"
+	case vendor == "other": // any vendor not in the fixed list, so it could be the reviewer's
+		return "same vendor: cannot tell; the claim's vendor is \"other\""
+	case !slices.Contains(rr.m.WorkerVendors, vendor):
+		return fmt.Sprintf("same vendor: the claim's vendor %q is not in worker_vendors", vendor)
+	case pv == "":
+		return "same vendor: cannot tell the reviewer's vendor; set provider.vendor"
+	case pv == vendor:
+		return fmt.Sprintf("same vendor: the worker and the reviewer (%s) are both %s", rr.cfg, vendor)
+	}
+	return ""
 }
 
 // loadPasses reads WorkDir/passes once, so a restarted auditor still knows
@@ -221,12 +275,12 @@ func (r *Auditor) Resolve(ctx context.Context, in ResolveIn) (ResolveOut, error)
 	if err != nil {
 		return ResolveOut{}, err
 	}
-	gates, err := gatesFor(dir, base, baseID, in.SHA)
+	applied, err := gatesFor(dir, base, baseID, in.SHA)
 	if err != nil {
 		return ResolveOut{}, err
 	}
-	out := ResolveOut{Base: base, BaseID: baseID}
-	for _, g := range gates {
+	out := ResolveOut{Base: base, BaseID: baseID, GatesDigest: gates.Digest}
+	for _, g := range applied {
 		out.Gates = append(out.Gates, GateInfo{Name: g.Name, Timeout: g.Timeout, Retry: g.Retry})
 	}
 	return out, nil
@@ -268,16 +322,13 @@ func (r *Auditor) Attest(ctx context.Context, in AttestIn) (map[string]string, e
 	return chain.Verify(dir, in.BaseID, in.Tip, in.Gates)
 }
 
-// Rerun is this build's stand-in for the independent review: the operator's
-// command, never one from the repository under review.
+// Rerun reviews the diff blind through the base's provider, then has the
+// judge compare the findings with the worker's claim. A finding the claim
+// misses, or a statement in it the findings contradict, rejects the gate.
 func (r *Auditor) Rerun(ctx context.Context, in RerunIn) (Verdict, error) {
-	if len(r.RerunCmd) == 0 {
-		return Verdict{Reason: "this auditor has no re-run configured"}, nil
-	}
 	defer heartbeat(ctx)()
-	// The lock is held through the command: re-runs of one repository share
-	// its clone, so they take turns, each on a clean checkout of the base.
-	// ponytail: serial per repository; a worktree per job if runs queue up.
+	// The lock is held through the review, which reads the shared clone.
+	// ponytail: serial per repository; release it after reading the diff if runs queue up.
 	unlock, err := r.lock(ctx, in.RepoURL)
 	if err != nil {
 		return Verdict{}, err
@@ -294,62 +345,123 @@ func (r *Auditor) Rerun(ctx context.Context, in RerunIn) (Verdict, error) {
 	if st, err := chain.Verify(dir, in.BaseID, in.Tip, []string{in.Gate}); err != nil {
 		return Verdict{}, err
 	} else if st[in.Gate] != chain.Valid {
-		return Verdict{Reason: "check commit " + st[in.Gate]}, nil
+		return Verdict{Reason: claimReason(st[in.Gate])}, nil
 	}
-	// Activities run at least once: a retry after the pass was recorded but
-	// its completion lost gets that pass, not a second, costly review.
-	key, err := r.passKey(dir, in.RepoURL, in.Gate, in.BaseID, in.Tip)
+	rr, err := r.load(dir, in.RepoURL, in.Gate, in.BaseID, in.Tip)
 	if err != nil {
 		return Verdict{}, err
 	}
-	if done, err := r.hasPass(key); err != nil {
+	if rr.gate.MustDifferFrom != "" {
+		if why := rr.differs(); why != "" {
+			return Verdict{Reason: why}, nil
+		}
+	}
+	// Activities run at least once: a retry after the pass was recorded but
+	// its completion lost gets that pass, not a second, costly review.
+	if done, err := r.hasPass(rr.key); err != nil {
 		return Verdict{}, err
 	} else if done {
 		return Verdict{Pass: true}, nil
 	}
-	if _, err := gitOut(ctx, dir, "checkout", "-q", "--force", "--detach", in.BaseID); err != nil {
+	diff := &capped{max: review.MaxDiff}
+	if err := gitTo(ctx, dir, diff, "diff", in.BaseID+"..."+in.Tip); diff.over {
+		return Verdict{Reason: review.ErrTooBig.Error()}, nil
+	} else if err != nil {
 		return Verdict{}, err
 	}
-	if _, err := gitOut(ctx, dir, "clean", "-q", "-ffdx"); err != nil {
-		return Verdict{}, err
-	}
-	home, err := os.MkdirTemp("", "tardis-rerun-")
-	if err != nil {
-		return Verdict{}, err
-	}
-	defer os.RemoveAll(home)
-	res, err := r.Exec.Run(ctx, executor.Job{
-		Argv: r.RerunCmd,
-		Dir:  dir,
-		Env: []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home,
-			"TARDIS_GATE=" + in.Gate, "TARDIS_SHA=" + in.Tip, "TARDIS_BASE=" + in.BaseID},
-		// None of the auditor's environment, and an empty HOME. It still runs
-		// as the auditor's user; the provider re-run (build 4) gets a sandbox.
-		Clean: true,
-	}, func(string) {})
-	if err != nil {
-		return Verdict{}, err
-	}
-	switch res.ExitCode {
-	case 0:
-		if err := r.recordPass(key); err != nil {
+	var runbook string
+	if in.Gate == "verify" && rr.m.VerifyRunbook != "" {
+		rb := &capped{max: review.MaxRunbook}
+		if err := gitTo(ctx, dir, rb, "show", in.BaseID+":"+rr.m.VerifyRunbook); rb.over {
+			return Verdict{Reason: fmt.Sprintf("runbook %s is over %d KiB", rr.m.VerifyRunbook, review.MaxRunbook>>10)}, nil
+		} else if err != nil {
 			return Verdict{}, err
 		}
-		return Verdict{Pass: true}, nil
-	case 1:
-		return Verdict{Reason: tail(res.Output)}, nil
+		runbook = rb.String()
 	}
-	return Verdict{}, fmt.Errorf("re-run exited %d: %s", res.ExitCode, tail(res.Output))
+	if rr.cfg.Type == "exec" && r.RerunUser == nil {
+		return Verdict{}, temporal.NewNonRetryableApplicationError(
+			"the base's provider is a command; this auditor runs one only as another user (tardis auditor --rerun-user)", "Malformed", nil)
+	}
+	getenv := r.Getenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	ask, err := provider.New(rr.cfg, getenv, r.RerunUser)
+	if err != nil {
+		return Verdict{}, temporal.NewNonRetryableApplicationError(err.Error(), "Malformed", nil)
+	}
+	findings, err := review.Blind(ctx, ask, rr.gate.Prompt, diff.String(), runbook)
+	if err != nil {
+		return Verdict{}, err
+	}
+	if len(findings) > 0 { // nothing found leaves nothing for the claim to miss
+		missed, disputed, err := review.Judge(ctx, ask, rr.summary, findings)
+		if err != nil {
+			return Verdict{}, err
+		}
+		if len(missed)+len(disputed) > 0 {
+			oneLine := func(v []string) string { return strings.Join(strings.Fields(strings.Join(v, "; ")), " ") }
+			var why []string
+			if len(missed) > 0 {
+				why = append(why, "missed: "+oneLine(missed))
+			}
+			if len(disputed) > 0 {
+				why = append(why, "disputed: "+oneLine(disputed))
+			}
+			// ponytail: model text is unbounded; keep it well under Temporal's 2 MiB payload limit
+			return Verdict{Reason: trunc(strings.Join(why, "; "), 8<<10) + "\n\nFindings:\n" + trunc(review.Render(findings, 50), 48<<10) + "\nReviewer: " + rr.cfg.String()}, nil
+		}
+	}
+	if err := r.recordPass(rr.key); err != nil {
+		return Verdict{}, err
+	}
+	return Verdict{Pass: true}, nil
 }
 
-// PostCheck records a check run. A failure is posted as asked: it can only
-// block a merge. A success is posted only if this auditor passed a re-run of
-// the gate on the same diff and the chain on the SHA is valid, so a workflow
-// run by anyone else cannot produce one.
-// ponytail: log line until the GitHub App posts them.
+// trunc cuts s to at most n bytes on a rune boundary.
+func trunc(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
+}
+
+// capped keeps the first max bytes written to it and notes any more.
+type capped struct {
+	bytes.Buffer
+	max  int
+	over bool
+}
+
+func (c *capped) Write(p []byte) (int, error) {
+	if c.Len()+len(p) > c.max {
+		c.over = true
+		return 0, review.ErrTooBig // stops git
+	}
+	return c.Buffer.Write(p)
+}
+
+// PostCheck posts a tardis/<gate> check run as the App. A failure is posted
+// as asked: it can only block a merge. A success is posted only if this
+// auditor passed a re-run of the gate on the same diff and the chain on the
+// SHA is valid, so a workflow run by anyone else cannot produce one. The
+// check names this tardis, its reference gates and, on a success, the
+// reviewer, so it is clear which policy passed it.
 func (r *Auditor) PostCheck(ctx context.Context, in CheckIn) error {
+	if !r.Repos[in.RepoURL] { // failures too: only listed repositories get checks
+		return temporal.NewNonRetryableApplicationError(
+			"repository "+in.RepoURL+" is not served by this auditor (tardis auditor --repo)", "Malformed", nil)
+	}
+	if in.Conclusion != "success" && in.Conclusion != "failure" { // neutral and skipped satisfy a required check
+		return temporal.NewNonRetryableApplicationError("conclusion "+in.Conclusion+": want success or failure", "Malformed", nil)
+	}
+	defer heartbeat(ctx)()
+	footer := fmt.Sprintf("tardis %s, reference gates %.12s", r.Version, gates.Digest)
 	if in.Conclusion == "success" {
-		defer heartbeat(ctx)()
 		unlock, err := r.lock(ctx, in.RepoURL)
 		if err != nil {
 			return err
@@ -362,25 +474,46 @@ func (r *Auditor) PostCheck(ctx context.Context, in CheckIn) error {
 		if err := checkBase(ctx, dir, in.Base, in.BaseID); err != nil {
 			return err
 		}
-		st, err := chain.Verify(dir, in.BaseID, in.SHA, []string{in.Gate})
+		passed, rr, why, err := r.passedHere(dir, in.RepoURL, in.Gate, in.BaseID, in.SHA)
 		if err != nil {
 			return err
 		}
-		key, err := r.passKey(dir, in.RepoURL, in.Gate, in.BaseID, in.SHA)
-		if err != nil {
-			return err
-		}
-		passed, err := r.hasPass(key)
-		if err != nil {
-			return err
-		}
-		if st[in.Gate] != chain.Valid || !passed {
+		if !passed {
 			return temporal.NewNonRetryableApplicationError(fmt.Sprintf(
-				"refusing tardis/%s success on %s: chain %s, re-run passed here: %v", in.Gate, in.SHA, st[in.Gate], passed), "Rejected", nil)
+				"refusing tardis/%s success on %s: %s", in.Gate, in.SHA, why), "Rejected", nil)
 		}
+		in.Summary = "passed"
+		footer += ", reviewer " + rr.cfg.String()
 	}
-	fmt.Fprintf(r.Log, "check tardis/%s %s on %s %s\n", in.Gate, in.Conclusion, in.SHA, in.Summary)
+	first, _, _ := strings.Cut(in.Summary, "\n")
+	c := ghapp.CheckRun{Name: "tardis/" + in.Gate, Conclusion: in.Conclusion, Title: first, Summary: first,
+		Text: strings.TrimSpace(in.Summary) + "\n\n" + footer}
+	if repo, ok := ghapp.Repo(in.RepoURL); ok && r.App != nil {
+		return r.App.PostCheck(ctx, repo, in.SHA, c)
+	}
+	fmt.Fprintf(r.Log, "check %s %s on %s: %s (no GitHub App for %s)\n", c.Name, c.Conclusion, in.SHA, first, in.RepoURL)
 	return nil
+}
+
+// passedHere reports whether gate holds a valid check on sha and this
+// auditor recorded a pass of it on baseID; if not, why.
+func (r *Auditor) passedHere(dir, repoURL, gate, baseID, sha string) (bool, rerun, string, error) {
+	st, err := chain.Verify(dir, baseID, sha, []string{gate})
+	if err != nil {
+		return false, rerun{}, "", err
+	}
+	if st[gate] != chain.Valid {
+		return false, rerun{}, claimReason(st[gate]), nil
+	}
+	rr, err := r.load(dir, repoURL, gate, baseID, sha)
+	if err != nil {
+		return false, rerun{}, "", err
+	}
+	passed, err := r.hasPass(rr.key)
+	if err != nil || !passed {
+		return false, rr, fmt.Sprintf("no re-run by %s passed here on %.12s", rr.cfg, baseID), err
+	}
+	return true, rr, "", nil
 }
 
 // OpenPR records the PR the App will open, only while the branch still points
@@ -420,26 +553,18 @@ func (r *Auditor) OpenPR(ctx context.Context, in OpenPRIn) (string, error) {
 	// current base requires must hold a valid check on this head and a pass
 	// this auditor recorded on this base: one earned on any other base opens
 	// nothing.
-	gates, err := gatesFor(dir, in.Base, in.BaseID, in.Head)
+	applied, err := gatesFor(dir, in.Base, in.BaseID, in.Head)
 	if err != nil {
 		return "", err
 	}
-	for _, g := range gates {
-		st, err := chain.Verify(dir, in.BaseID, in.Head, []string{g.Name})
+	for _, g := range applied {
+		passed, _, why, err := r.passedHere(dir, in.RepoURL, g.Name, in.BaseID, in.Head)
 		if err != nil {
 			return "", err
 		}
-		key, err := r.passKey(dir, in.RepoURL, g.Name, in.BaseID, in.Head)
-		if err != nil {
-			return "", err
-		}
-		passed, err := r.hasPass(key)
-		if err != nil {
-			return "", err
-		}
-		if st[g.Name] != chain.Valid || !passed {
+		if !passed {
 			return "", temporal.NewNonRetryableApplicationError(fmt.Sprintf(
-				"refusing to open a PR: %s on %.12s: chain %s, re-run passed here on %.12s: %v", g.Name, in.Head, st[g.Name], in.BaseID, passed), "Rejected", nil)
+				"refusing to open a PR: %s on %.12s: %s", g.Name, in.Head, why), "Rejected", nil)
 		}
 	}
 	fmt.Fprintf(r.Log, "open-pr %s into %s at %s\n", in.Branch, in.Base, in.Head)

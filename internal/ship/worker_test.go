@@ -2,6 +2,8 @@ package ship
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -9,13 +11,15 @@ import (
 	"strings"
 	"testing"
 
+	"go.temporal.io/sdk/temporal"
+
 	"github.com/leighstillard/tardis-gate/internal/chain"
 	"github.com/leighstillard/tardis-gate/internal/executor"
 )
 
 // workerRepo is a clone of a bare origin with main, enrolled with one gate
 // (simplify), pushed and feature checked out one code commit ahead.
-func workerRepo(t *testing.T) (*Worker, func(...string) string) {
+func workerRepo(t *testing.T, config ...string) (*Worker, func(...string) string) {
 	t.Helper()
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -40,7 +44,7 @@ func workerRepo(t *testing.T) (*Worker, func(...string) string) {
 	if err := os.MkdirAll(filepath.Join(dir, ".tardis"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".tardis", "config.yml"), []byte("gates:\n  - name: simplify\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".tardis", "config.yml"), []byte("gates:\n  - name: simplify\n"+strings.Join(config, "")), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	git("add", "-A")
@@ -139,6 +143,30 @@ func TestWorkerReviewRefusesOversizedFindings(t *testing.T) {
 	git("checkout", "-q", "feature")
 	if _, err := a.WorkerReview(context.Background(), reviewIn(git, "simplify")); err == nil || !strings.Contains(err.Error(), "over 64 KiB") {
 		t.Errorf("err = %v; want oversized findings refused", err)
+	}
+}
+
+func TestWorkerReviewRetriesOnlyExitRetry(t *testing.T) {
+	for code, retryable := range map[int]bool{ExitRetry: true, 1: false} {
+		a, git := workerRepo(t)
+		a.Exec, a.Out = executor.Local{}, io.Discard
+		git("checkout", "-q", "main")
+		gate := filepath.Join(a.Dir, ".tardis", "gates", "simplify", "gate.yml")
+		if err := os.MkdirAll(filepath.Dir(gate), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(gate, []byte(fmt.Sprintf("name: simplify\nrun: [sh, -c, 'exit %d']\ntimeout: 1m\n", code)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git("add", "-A")
+		git("commit", "-q", "-m", "simplify fails")
+		git("push", "-q", "origin", "main")
+		git("checkout", "-q", "feature")
+		_, err := a.WorkerReview(context.Background(), reviewIn(git, "simplify"))
+		var ae *temporal.ApplicationError
+		if err == nil || errors.As(err, &ae) && ae.NonRetryable() == retryable {
+			t.Errorf("exit %d: err = %v; want retryable %v", code, err, retryable)
+		}
 	}
 }
 

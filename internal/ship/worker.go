@@ -14,6 +14,7 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 
+	"github.com/leighstillard/tardis-gate/gates"
 	"github.com/leighstillard/tardis-gate/internal/chain"
 	"github.com/leighstillard/tardis-gate/internal/executor"
 	"github.com/leighstillard/tardis-gate/internal/manifest"
@@ -202,13 +203,17 @@ func (a *Worker) review(ctx context.Context, in WorkerReviewIn, base string) err
 			env = append(env, kv)
 		}
 	}
+	if in.GatesDigest != "" && in.GatesDigest != gates.Digest && a.Out != nil {
+		fmt.Fprintf(a.Out, "%s: warning: this tardis's reference gates (%.12s) are not the auditor's (%.12s); install the auditor's version\n",
+			in.Gate, gates.Digest, in.GatesDigest)
+	}
 	res, err := a.Exec.Run(ctx, executor.Job{
 		Argv: gate.Run,
 		Dir:  a.Dir,
 		Env: append(env,
 			"TARDIS_GATE="+in.Gate, "TARDIS_BASE="+base, "TARDIS_HEAD="+in.Code,
 			"TARDIS_DIFF_FILE="+diffFile, "TARDIS_RUNBOOK="+m.VerifyRunbook,
-			"TARDIS_FINDINGS_OUT="+findings),
+			"TARDIS_FINDINGS_OUT="+findings, "TARDIS_TOOL="+a.Tool, "TARDIS_AUDITOR_GATES="+in.GatesDigest),
 		Clean: true,
 	}, func(string) {})
 	if err != nil {
@@ -220,6 +225,9 @@ func (a *Worker) review(ctx context.Context, in WorkerReviewIn, base string) err
 		cmd := strings.Join(gate.Run, " ")
 		if a.Out != nil {
 			fmt.Fprintf(a.Out, "%s: %s exited %d:\n%s\n", in.Gate, cmd, res.ExitCode, tail(res.Output))
+		}
+		if res.ExitCode == ExitRetry {
+			return fmt.Errorf("%s exited %d (try again); its output is on the worker's machine", cmd, res.ExitCode)
 		}
 		return temporal.NewNonRetryableApplicationError(
 			fmt.Sprintf("%s exited %d; its output is on the worker's machine", cmd, res.ExitCode), "Rejected", nil)
@@ -293,6 +301,10 @@ func (a *Worker) Notify(ctx context.Context, e Event) error {
 }
 
 // heartbeat records a heartbeat every 10 s until the returned stop is called.
+// ExitRetry is the gate exit status for a failure worth retrying, such as
+// a model outage; every other non-zero status rejects the change.
+const ExitRetry = 75 // EX_TEMPFAIL
+
 func heartbeat(ctx context.Context) (stop func()) {
 	done := make(chan struct{})
 	go func() {

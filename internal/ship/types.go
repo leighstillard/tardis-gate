@@ -83,6 +83,9 @@ type ResolveOut struct {
 	Base   string // the base branch, as the default branch's manifest names it
 	BaseID string // the base branch's commit when resolved; every later step uses it
 	Gates  []GateInfo
+	// GatesDigest is the auditor's reference gates (gates.Digest), so the
+	// worker's tardis review can warn when it holds other ones.
+	GatesDigest string
 }
 
 // GateInfo is what the workflow needs to know about a gate.
@@ -108,5 +111,5 @@ type (
 	RerunIn        struct{ RepoURL, Base, BaseID, Tip, Gate string }
 	CheckIn        struct{ RepoURL, Base, BaseID, SHA, Gate, Conclusion, Summary string }
 	OpenPRIn       struct{ RepoURL, Branch, Base, BaseID, Head string }
-	WorkerReviewIn struct{ Gate, Base, BaseID, Code, Tip string }
+	WorkerReviewIn struct{ Gate, Base, BaseID, Code, Tip, GatesDigest string }
 )

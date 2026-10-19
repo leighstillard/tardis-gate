@@ -12,8 +12,10 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"os/user"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -26,6 +28,7 @@ import (
 
 	"github.com/leighstillard/tardis-gate/internal/chain"
 	"github.com/leighstillard/tardis-gate/internal/executor"
+	"github.com/leighstillard/tardis-gate/internal/ghapp"
 	"github.com/leighstillard/tardis-gate/internal/manifest"
 	"github.com/leighstillard/tardis-gate/internal/ship"
 )
@@ -109,12 +112,10 @@ func checkRemote(raw string) error {
 // otherwise the name plus a hash of the whole remote URL, so two repositories
 // with the same name elsewhere never share a run.
 func repoID(remoteURL string) string {
-	u := strings.TrimSuffix(strings.TrimSuffix(remoteURL, "/"), ".git")
-	for _, p := range []string{"https://github.com/", "ssh://git@github.com/", "git@github.com:"} {
-		if rest, ok := strings.CutPrefix(u, p); ok && strings.Count(rest, "/") == 1 {
-			return strings.ToLower(rest)
-		}
+	if r, ok := ghapp.Repo(remoteURL); ok {
+		return r
 	}
+	u := strings.TrimSuffix(strings.TrimSuffix(remoteURL, "/"), ".git")
 	sum := sha256.Sum256([]byte(remoteURL))
 	return "other/" + path.Base(filepath.ToSlash(u)) + "-" + hex.EncodeToString(sum[:16]) // 128 bits: no two remotes share a run
 }
@@ -330,26 +331,54 @@ func auditor(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("auditor", flag.ContinueOnError)
 	home, _ := os.UserCacheDir()
 	workDir := fs.String("work-dir", filepath.Join(home, "tardis", "runner") /* v0.3 path: keeps its passes */, "where repository clones and the record of passed re-runs live")
-	rerun := fs.String("rerun-cmd", "", "shell command run per gate; exit 0 passes, 1 rejects (stand-in until provider re-runs). "+
-		"It runs in a clean checkout of the base, never the branch's code: read the change with git through $TARDIS_SHA and $TARDIS_BASE")
+	appID := fs.String("app-id", os.Getenv("TARDIS_APP_ID"), "GitHub App ID that posts the check runs (or $TARDIS_APP_ID); without one they are only logged")
+	appKey := fs.String("app-key", os.Getenv("TARDIS_APP_KEY"), "the App's private key, a PEM file (or $TARDIS_APP_KEY)")
+	rerunUser := fs.String("rerun-user", "", "user a provider of type exec runs as, with an empty HOME and none of this "+
+		"auditor's environment (the auditor must be able to switch to it; limit its network with a firewall rule). "+
+		"Without it an exec provider is refused")
 	repos := map[string]bool{}
 	fs.Func("repo", "repository URL this auditor serves, exactly as workers' remotes name it (repeatable, at least one). "+
 		"Run one auditor per Temporal namespace: auditors share one task queue, and each keeps the record of re-runs it passed in its own --work-dir", func(u string) error {
 		repos[u] = true
 		return nil
 	})
-	if _, code, ok := parse(fs, "auditor --repo <url>... [--work-dir <dir>] [--rerun-cmd <sh>]", args, 0, stderr); !ok {
+	if _, code, ok := parse(fs, "auditor --repo <url>... [--work-dir <dir>] [--app-id <id> --app-key <pem>] [--rerun-user <user>]", args, 0, stderr); !ok {
 		return code
 	}
 	if len(repos) == 0 {
 		fmt.Fprintln(stderr, "auditor: --repo is required: name each repository URL this auditor serves")
 		return 2
 	}
-	fmt.Fprintln(stderr, "tardis auditor: a stand-in until builds 4 and 5. Re-runs are --rerun-cmd; check runs and PRs are only logged, never posted or opened.")
-	r := &ship.Auditor{Repos: repos, WorkDir: *workDir, Exec: executor.Local{}, Log: stdout}
-	if *rerun != "" {
-		r.RerunCmd = []string{"sh", "-c", *rerun}
+	r := &ship.Auditor{Repos: repos, WorkDir: *workDir, Version: version(), Log: stdout}
+	if (*appID == "") != (*appKey == "") {
+		fmt.Fprintln(stderr, "auditor: --app-id and --app-key go together")
+		return 2
 	}
+	if *appID != "" {
+		app, err := ghapp.Load(*appID, *appKey)
+		if err != nil {
+			fmt.Fprintln(stderr, "auditor:", err)
+			return 2
+		}
+		r.App = app
+	} else {
+		fmt.Fprintln(stderr, "tardis auditor: no GitHub App (--app-id, --app-key): check runs are only logged.")
+	}
+	if *rerunUser != "" {
+		u, err := user.Lookup(*rerunUser)
+		if err != nil {
+			fmt.Fprintln(stderr, "auditor:", err)
+			return 2
+		}
+		uid, _ := strconv.ParseUint(u.Uid, 10, 32) // numeric on unix
+		gid, _ := strconv.ParseUint(u.Gid, 10, 32)
+		if uid == 0 || gid == 0 || int(uid) == os.Geteuid() {
+			fmt.Fprintf(stderr, "auditor: --rerun-user %s must be an unprivileged user other than the auditor's\n", *rerunUser)
+			return 2
+		}
+		r.RerunUser = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
+	}
+	fmt.Fprintln(stderr, "tardis auditor: PRs are only logged until build 5.")
 	c, err := ship.Dial()
 	if err != nil {
 		fmt.Fprintln(stderr, "auditor: temporal:", err)

@@ -4,35 +4,71 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
 
+	"github.com/leighstillard/tardis-gate/gates"
 	"github.com/leighstillard/tardis-gate/internal/chain"
-	"github.com/leighstillard/tardis-gate/internal/executor"
 )
 
+// fakeModel is an OpenAI-compatible endpoint that answers the blind review
+// with blind and the judge with judge, counting calls.
+type fakeModel struct {
+	blind, judge string
+	calls        atomic.Int32
+}
+
+// config is the provider section pointing at m; the model is openai's.
+func (m *fakeModel) config(t *testing.T) string {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m.calls.Add(1)
+		var in struct{ Messages []struct{ Content string } }
+		json.NewDecoder(r.Body).Decode(&in)
+		answer := m.blind
+		if strings.HasPrefix(in.Messages[0].Content, "You compare") {
+			answer = m.judge
+		}
+		json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": answer}}}})
+	}))
+	t.Cleanup(srv.Close)
+	return "provider:\n  base_url: " + srv.URL + "\n  model: openai/m\n  vendor: openai\n"
+}
+
 // auditorFixture is workerRepo's origin with a valid simplify check on top of
-// the feature branch. It returns
+// the feature branch, reviewed by a model that finds nothing. It returns
 // the auditor, the origin URL, main's commit and the check commit.
 func auditorFixture(t *testing.T) (*Auditor, string, string, string) {
 	t.Helper()
-	a, git := workerRepo(t)
-	check, err := chain.Commit(a.Dir, "simplify", "ok", a.Tool)
+	r, url, base, check, _ := modelFixture(t, "simplify", "")
+	return r, url, base, check
+}
+
+// modelFixture is auditorFixture for gate, with config added to the base's
+// and the model returned for the test to script.
+func modelFixture(t *testing.T, gate, config string) (*Auditor, string, string, string, *fakeModel) {
+	t.Helper()
+	m := &fakeModel{blind: "[]", judge: `{"missed": [], "disputed": []}`}
+	a, git := workerRepo(t, config+m.config(t)) // config first: it may add gates
+	check, err := chain.Commit(a.Dir, gate, "ok", a.Tool)
 	if err != nil {
 		t.Fatal(err)
 	}
 	git("push", "-q", "origin", "feature")
 	url := git("remote", "get-url", "origin")
-	r := &Auditor{Repos: map[string]bool{url: true}, WorkDir: t.TempDir(), RerunCmd: []string{"true"}, Exec: executor.Local{}, Log: io.Discard}
-	return r, url, git("rev-parse", "main"), check
+	r := &Auditor{Repos: map[string]bool{url: true}, WorkDir: t.TempDir(), Log: io.Discard}
+	return r, url, git("rev-parse", "main"), check, m
 }
 
 func TestAuditorPostsSuccessOnlyForItsOwnPass(t *testing.T) {
@@ -52,13 +88,19 @@ func TestAuditorPostsSuccessOnlyForItsOwnPass(t *testing.T) {
 		t.Errorf("success after a passing re-run: %v", err)
 	}
 	// A restarted auditor still knows what it passed.
-	restarted := &Auditor{Repos: r.Repos, WorkDir: r.WorkDir, RerunCmd: r.RerunCmd, Exec: r.Exec, Log: io.Discard}
+	restarted := &Auditor{Repos: r.Repos, WorkDir: r.WorkDir, Log: io.Discard}
 	if err := restarted.PostCheck(ctx, success); err != nil {
 		t.Errorf("success after a restart: %v", err)
 	}
 	// Failures are posted as asked: they can only block.
 	if err := r.PostCheck(ctx, CheckIn{RepoURL: url, SHA: check, Gate: "verify", Conclusion: "failure"}); err != nil {
 		t.Errorf("failure: %v", err)
+	}
+	if err := r.PostCheck(ctx, CheckIn{RepoURL: url + ".evil", SHA: check, Gate: "verify", Conclusion: "failure"}); err == nil {
+		t.Error("posted a check for a repository the auditor does not serve")
+	}
+	if err := r.PostCheck(ctx, CheckIn{RepoURL: url, SHA: check, Gate: "verify", Conclusion: "neutral"}); err == nil {
+		t.Error("posted a neutral check, which satisfies a required check without a re-run")
 	}
 }
 
@@ -217,32 +259,90 @@ func TestAuditorIgnoresATagNamedLikeTheBase(t *testing.T) {
 	}
 }
 
-func TestAPassFromAReplacedReviewerCountsForNothing(t *testing.T) {
+func TestAPassUnderReplacedReferenceGatesCountsForNothing(t *testing.T) {
 	r, url, base, check := auditorFixture(t)
 	ctx := context.Background()
 	if v, err := r.Rerun(ctx, RerunIn{RepoURL: url, Base: "main", BaseID: base, Tip: check, Gate: "simplify"}); err != nil || !v.Pass {
 		t.Fatalf("rerun: %+v, %v", v, err)
 	}
-	r.RerunCmd = []string{"sh", "-c", "exit 0", "new reviewer"}
+	defer func(d string) { gates.Digest = d }(gates.Digest)
+	gates.Digest = "a tardis with other prompts"
 	if err := r.PostCheck(ctx, CheckIn{RepoURL: url, Base: "main", BaseID: base, SHA: check, Gate: "simplify", Conclusion: "success"}); err == nil {
-		t.Error("a pass from the old reviewer authorised a success under the new one")
+		t.Error("a pass under the old reference gates authorised a success under new ones")
 	}
 }
 
 func TestRerunIsNotRepeatedOnceRecorded(t *testing.T) {
-	r, url, base, check := auditorFixture(t)
+	r, url, base, check, m := modelFixture(t, "simplify", "")
 	ctx := context.Background()
-	// Passes the first time; rejects if it ever runs again.
-	marker := filepath.Join(t.TempDir(), "ran")
-	r.RerunCmd = []string{"sh", "-c", "test ! -e " + marker + " && touch " + marker}
 	in := RerunIn{RepoURL: url, Base: "main", BaseID: base, Tip: check, Gate: "simplify"}
 	if v, err := r.Rerun(ctx, in); err != nil || !v.Pass {
 		t.Fatalf("rerun: %+v, %v", v, err)
 	}
-	// The retry of an attempt whose completion was lost: the command, which
-	// would now reject, must not run.
+	if n := m.calls.Load(); n != 1 {
+		t.Errorf("%d model calls for a review with no findings; want 1, no judge", n)
+	}
+	// The retry of an attempt whose completion was lost must not ask again.
+	m.blind = `[{"path": "a.txt", "line": 1, "severity": "high", "claim": "new"}]`
 	if v, err := r.Rerun(ctx, in); err != nil || !v.Pass {
 		t.Errorf("retried rerun: %+v, %v; want the recorded pass", v, err)
+	}
+	if n := m.calls.Load(); n != 1 {
+		t.Errorf("%d model calls after the retry; want still 1", n)
+	}
+}
+
+func TestRerunRejectsWhatTheClaimMisses(t *testing.T) {
+	r, url, base, check, m := modelFixture(t, "simplify", "")
+	m.blind = "Here you go:\n```json\n" + `[{"path": "a.txt", "line": 1, "severity": "high", "claim": "a is wrong"}]` + "\n```"
+	m.judge = `{"missed": ["a.txt:1 a is wrong"], "disputed": ["\"ok\""]}`
+	v, err := r.Rerun(context.Background(), RerunIn{RepoURL: url, Base: "main", BaseID: base, Tip: check, Gate: "simplify"})
+	first, rest, _ := strings.Cut(v.Reason, "\n")
+	if err != nil || v.Pass || first != `missed: a.txt:1 a is wrong; disputed: "ok"` ||
+		!strings.Contains(rest, "a.txt:1 [high] a is wrong") || !strings.Contains(rest, "Reviewer: openaicompat openai/m") {
+		t.Errorf("rerun: %+v, %v", v, err)
+	}
+	if n := m.calls.Load(); n != 2 {
+		t.Errorf("%d model calls; want blind and judge", n)
+	}
+}
+
+func TestMustDifferFromRefusesBeforeAnyCall(t *testing.T) {
+	// The worker's tool is anthropic/a/b.
+	for name, tc := range map[string]struct{ config, tool, want string }{
+		"no worker_vendors":   {"", "", "set worker_vendors"},
+		"unlisted vendor":     {"worker_vendors: [openai]\n", "", `"anthropic" is not in worker_vendors`},
+		"same vendor":         {"worker_vendors: [anthropic, openai]\n", "openai/x/y", "both openai"},
+		"other is anyone":     {"worker_vendors: [other]\n", "other/x/y", `vendor is "other"`},
+		"reviewer is another": {"worker_vendors: [anthropic]\n", "", "pass"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := "  - name: review\n" + tc.config
+			r, url, base, check, m := modelFixture(t, "review", config)
+			if tc.tool != "" { // rewrite the claim's tool
+				w := t.TempDir()
+				run(t, "git", "-C", w, "clone", "-q", "-b", "feature", url, ".")
+				run(t, "git", "-C", w, "reset", "-q", "--hard", "HEAD^")
+				var err error
+				if check, err = chain.Commit(w, "review", "ok", tc.tool); err != nil {
+					t.Fatal(err)
+				}
+				run(t, "git", "-C", w, "push", "-q", "--force", "origin", "feature")
+			}
+			v, err := r.Rerun(context.Background(), RerunIn{RepoURL: url, Base: "main", BaseID: base, Tip: check, Gate: "review"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == "pass" {
+				if !v.Pass {
+					t.Errorf("rerun: %+v; want a pass", v)
+				}
+				return
+			}
+			if v.Pass || !strings.HasPrefix(v.Reason, "same vendor") || !strings.Contains(v.Reason, tc.want) || m.calls.Load() != 0 {
+				t.Errorf("rerun: %+v after %d calls; want a same-vendor refusal naming %q and no call", v, m.calls.Load(), tc.want)
+			}
+		})
 	}
 }
 

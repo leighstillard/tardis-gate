@@ -644,3 +644,17 @@ func TestVerify200CommitsUnderOneSecond(t *testing.T) {
 	}
 	want(t, got, "g9", Valid)
 }
+
+func TestClaim(t *testing.T) {
+	r := newRepo(t)
+	r.branch()
+	a := r.code("A")
+	c := r.check("simplify", a, "looks fine\n\n- nothing to cut")
+	summary, tool, err := Claim(r.dir, c)
+	if err != nil || summary != "looks fine\n\n- nothing to cut" || tool != "anthropic/claude-code/x" {
+		t.Errorf("Claim = %q, %q, %v", summary, tool, err)
+	}
+	if _, _, err := Claim(r.dir, a); err == nil {
+		t.Error("Claim on a code commit succeeded")
+	}
+}

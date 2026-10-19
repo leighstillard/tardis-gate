@@ -707,3 +707,25 @@ func TestMustDifferFromAcceptsTheOldName(t *testing.T) {
 		t.Errorf("must_differ_from = %q, want worker", got)
 	}
 }
+
+func TestProviderAndPrompts(t *testing.T) {
+	root := copySample(t, map[string]string{
+		ConfigPath: "gates:\n  - name: simplify\n  - name: lint\n    dir: tools/lint\n  - name: other\n    dir: tools/other\n" +
+			"provider:\n  type: anthropic\n  model: claude-x\nworker_vendors: [openai]\n",
+		"tools/lint/gate.yml":  "name: lint\nrun: [true]\ntimeout: 1m\n",
+		"tools/lint/prompt.md": "Find lint.",
+		"tools/other/gate.yml": "name: other\nrun: [true]\ntimeout: 1m\n",
+	})
+	m, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Provider.Type != "anthropic" || m.Provider.Model != "claude-x" || !reflect.DeepEqual(m.WorkerVendors, []string{"openai"}) {
+		t.Errorf("provider %+v, worker_vendors %v", m.Provider, m.WorkerVendors)
+	}
+	if !strings.Contains(m.Gates[0].Prompt, "needless complexity") || m.Gates[1].Prompt != "Find lint." || !strings.Contains(m.Gates[2].Prompt, "the other gate") {
+		t.Errorf("prompts: %q / %q / %q", m.Gates[0].Prompt, m.Gates[1].Prompt, m.Gates[2].Prompt)
+	}
+	wantErr(t, copySample(t, map[string]string{ConfigPath: "gates:\n  - name: simplify\nprovider:\n  type: gemini\n"}), `provider: type "gemini"`)
+	wantErr(t, copySample(t, map[string]string{ConfigPath: "gates:\n  - name: simplify\nprovider:\n  api_key: x\n"}), "api_key")
+}
