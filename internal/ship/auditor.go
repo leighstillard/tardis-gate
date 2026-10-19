@@ -456,6 +456,9 @@ func (r *Auditor) PostCheck(ctx context.Context, in CheckIn) error {
 		return temporal.NewNonRetryableApplicationError(
 			"repository "+in.RepoURL+" is not served by this auditor (tardis auditor --repo)", "Malformed", nil)
 	}
+	if in.Conclusion != "success" && in.Conclusion != "failure" { // neutral and skipped satisfy a required check
+		return temporal.NewNonRetryableApplicationError("conclusion "+in.Conclusion+": want success or failure", "Malformed", nil)
+	}
 	defer heartbeat(ctx)()
 	footer := fmt.Sprintf("tardis %s, reference gates %.12s", r.Version, gates.Digest)
 	if in.Conclusion == "success" {

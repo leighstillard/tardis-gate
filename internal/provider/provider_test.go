@@ -61,6 +61,7 @@ func TestKnownEndpointsOutrankVendor(t *testing.T) {
 		{Config{Type: "anthropic", Vendor: "openai"}, "anthropic"},
 		{Config{BaseURL: "https://api.openai.com/v1", Vendor: "anthropic"}, "openai"},
 		{Config{Model: "qwen/q", Vendor: "anthropic"}, "qwen"},
+		{Config{BaseURL: "https://openrouter.ai:443/api/v1", Model: "openai/m", Vendor: "anthropic"}, "openai"},
 		{Config{BaseURL: "http://localhost:11434/v1", Vendor: "Google"}, "google"},
 		{Config{Type: "anthropic", BaseURL: "https://proxy.example/v1"}, "anthropic"},
 	} {

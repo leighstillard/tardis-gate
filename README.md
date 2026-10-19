@@ -271,7 +271,7 @@ and, on a pass, the reviewer.
 
 A provider of `type: exec` runs a local command, which is code. The auditor refuses one
 unless it is given `--rerun-user <user>`, which must be neither root nor the auditor's
-own user. The command then runs as that user, with an
+own user, and whose group is not root. The command then runs as that user, with an
 empty `HOME` and none of the auditor's environment. Limit that user's network to the
 provider with a firewall rule, for example with nftables:
 

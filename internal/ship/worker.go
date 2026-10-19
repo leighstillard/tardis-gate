@@ -14,6 +14,7 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 
+	"github.com/leighstillard/tardis-gate/gates"
 	"github.com/leighstillard/tardis-gate/internal/chain"
 	"github.com/leighstillard/tardis-gate/internal/executor"
 	"github.com/leighstillard/tardis-gate/internal/manifest"
@@ -202,6 +203,10 @@ func (a *Worker) review(ctx context.Context, in WorkerReviewIn, base string) err
 			env = append(env, kv)
 		}
 	}
+	if in.GatesDigest != "" && in.GatesDigest != gates.Digest && a.Out != nil {
+		fmt.Fprintf(a.Out, "%s: warning: this tardis's reference gates (%.12s) are not the auditor's (%.12s); install the auditor's version\n",
+			in.Gate, gates.Digest, in.GatesDigest)
+	}
 	res, err := a.Exec.Run(ctx, executor.Job{
 		Argv: gate.Run,
 		Dir:  a.Dir,
@@ -214,15 +219,15 @@ func (a *Worker) review(ctx context.Context, in WorkerReviewIn, base string) err
 	if err != nil {
 		return err
 	}
-	if res.ExitCode == ExitRetry {
-		return fmt.Errorf("%s exited %d (try again); its output is on the worker's machine", strings.Join(gate.Run, " "), res.ExitCode)
-	}
 	if res.ExitCode != 0 {
 		// What the gate printed stays on this machine: errors go into
 		// Temporal history, which every worker in the namespace can read.
 		cmd := strings.Join(gate.Run, " ")
 		if a.Out != nil {
 			fmt.Fprintf(a.Out, "%s: %s exited %d:\n%s\n", in.Gate, cmd, res.ExitCode, tail(res.Output))
+		}
+		if res.ExitCode == ExitRetry {
+			return fmt.Errorf("%s exited %d (try again); its output is on the worker's machine", cmd, res.ExitCode)
 		}
 		return temporal.NewNonRetryableApplicationError(
 			fmt.Sprintf("%s exited %d; its output is on the worker's machine", cmd, res.ExitCode), "Rejected", nil)

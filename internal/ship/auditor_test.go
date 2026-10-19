@@ -99,6 +99,9 @@ func TestAuditorPostsSuccessOnlyForItsOwnPass(t *testing.T) {
 	if err := r.PostCheck(ctx, CheckIn{RepoURL: url + ".evil", SHA: check, Gate: "verify", Conclusion: "failure"}); err == nil {
 		t.Error("posted a check for a repository the auditor does not serve")
 	}
+	if err := r.PostCheck(ctx, CheckIn{RepoURL: url, SHA: check, Gate: "verify", Conclusion: "neutral"}); err == nil {
+		t.Error("posted a neutral check, which satisfies a required check without a re-run")
+	}
 }
 
 func TestAuditorPassIsBoundToItsBaseAndClaim(t *testing.T) {

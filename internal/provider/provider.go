@@ -115,7 +115,7 @@ func (c Config) ModelVendor() string {
 		return "anthropic"
 	case host == "api.openai.com":
 		return "openai"
-	case strings.TrimSuffix(c.BaseURL, "/") == OpenRouter:
+	case host == "openrouter.ai":
 		return vendorOf(c.Model)
 	case c.Vendor != "":
 		return strings.ToLower(c.Vendor)

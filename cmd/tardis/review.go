@@ -66,12 +66,21 @@ func reviewCmd(args []string, stdout, stderr io.Writer) int {
 	if p := os.Getenv("TARDIS_RUNBOOK"); gate == "verify" && p != "" {
 		cmd := exec.Command("git", "--no-replace-objects", "show", base+":"+p) // the base's, as the auditor reads it
 		cmd.Env = chain.GitEnv()
-		b, err := cmd.Output()
+		pipe, err := cmd.StdoutPipe()
 		if err != nil {
-			return fail(fmt.Errorf("runbook %s on %.12s: %w", p, base, err))
+			return fail(err)
 		}
+		if err := cmd.Start(); err != nil {
+			return fail(err)
+		}
+		b, _ := io.ReadAll(io.LimitReader(pipe, review.MaxRunbook+1))
 		if len(b) > review.MaxRunbook {
+			cmd.Process.Kill()
+			cmd.Wait()
 			return fail(fmt.Errorf("runbook %s is over %d KiB", p, review.MaxRunbook>>10))
+		}
+		if err := cmd.Wait(); err != nil {
+			return fail(fmt.Errorf("runbook %s on %.12s: %w", p, base, err))
 		}
 		runbook = string(b)
 	}
