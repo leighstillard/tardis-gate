@@ -11,7 +11,7 @@ forging means fabricating a whole consistent trace, not one commit.
 - `.tardis/config.yml`: `tier: basic|traced` (default basic), `require_trace` (default
   false). Untraced claim: blind review + judge decide, check-run title says "untraced";
   `require_trace: true` → failure "no trace". `tier: brokered` → lint "not supported yet".
-- Workflow mints a nonce per gate attempt for `WorkerReview`; it must appear in the trace
+- Workflow mints a nonce per gate attempt for `AuthorReview`; it must appear in the trace
   before the session's first read of a diff path.
 - The attached `tardis` hosts an OTLP/HTTP-JSON receiver on 127.0.0.1; `tardis trace env
   --tool claude|codex` prints the env/flags to start the session with.

@@ -17,7 +17,7 @@ context and a different vendor, and only its `tardis/<gate>` check run counts.
   and findings in the check-run output. Heartbeats throughout (numbers in -workflow).
 - `tardis review <gate>`: the reference gates' `run`; the same blind review via the
   configured provider, from the worker's side. A stub that exits 2 until this build.
-- `tardis auditor`: hosts queue `auditor`; reads App key, provider key, Temporal env.
+- `tardis auditor`: hosts queue `runner`; reads App key, provider key, Temporal env.
 - Touches: `internal/auditor`, `internal/provider`, `internal/ghapp`, `cmd/tardis auditor`.
   Does not touch: branch contents (read-only clone), worker tokens, chain rules.
 

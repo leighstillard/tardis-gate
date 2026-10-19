@@ -118,7 +118,7 @@
           "name": "Notify"
         },
         "taskQueue": {
-          "name": "worker/ship/local/origin/feature1",
+          "name": "author/ship/local/origin/feature1",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -227,7 +227,7 @@
           "name": "Resolve"
         },
         "taskQueue": {
-          "name": "auditor",
+          "name": "runner",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -348,10 +348,10 @@
       "activityTaskScheduledEventAttributes": {
         "activityId": "18",
         "activityType": {
-          "name": "WorkerReview"
+          "name": "AuthorReview"
         },
         "taskQueue": {
-          "name": "worker/ship/local/origin/feature1",
+          "name": "author/ship/local/origin/feature1",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -475,7 +475,7 @@
           "name": "Attest"
         },
         "taskQueue": {
-          "name": "auditor",
+          "name": "runner",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -599,7 +599,7 @@
           "name": "Rerun"
         },
         "taskQueue": {
-          "name": "auditor",
+          "name": "runner",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -723,7 +723,7 @@
           "name": "Notify"
         },
         "taskQueue": {
-          "name": "worker/ship/local/origin/feature1",
+          "name": "author/ship/local/origin/feature1",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -829,10 +829,10 @@
       "activityTaskScheduledEventAttributes": {
         "activityId": "42",
         "activityType": {
-          "name": "WorkerReview"
+          "name": "AuthorReview"
         },
         "taskQueue": {
-          "name": "worker/ship/local/origin/feature1",
+          "name": "author/ship/local/origin/feature1",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -956,7 +956,7 @@
           "name": "Attest"
         },
         "taskQueue": {
-          "name": "auditor",
+          "name": "runner",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -1080,7 +1080,7 @@
           "name": "Rerun"
         },
         "taskQueue": {
-          "name": "auditor",
+          "name": "runner",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -1204,7 +1204,7 @@
           "name": "Notify"
         },
         "taskQueue": {
-          "name": "worker/ship/local/origin/feature1",
+          "name": "author/ship/local/origin/feature1",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -1310,10 +1310,10 @@
       "activityTaskScheduledEventAttributes": {
         "activityId": "66",
         "activityType": {
-          "name": "WorkerReview"
+          "name": "AuthorReview"
         },
         "taskQueue": {
-          "name": "worker/ship/local/origin/feature1",
+          "name": "author/ship/local/origin/feature1",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -1437,7 +1437,7 @@
           "name": "Attest"
         },
         "taskQueue": {
-          "name": "auditor",
+          "name": "runner",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -1561,7 +1561,7 @@
           "name": "Rerun"
         },
         "taskQueue": {
-          "name": "auditor",
+          "name": "runner",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -1685,7 +1685,7 @@
           "name": "Notify"
         },
         "taskQueue": {
-          "name": "worker/ship/local/origin/feature1",
+          "name": "author/ship/local/origin/feature1",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -1794,7 +1794,7 @@
           "name": "Attest"
         },
         "taskQueue": {
-          "name": "auditor",
+          "name": "runner",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -1918,7 +1918,7 @@
           "name": "PostCheck"
         },
         "taskQueue": {
-          "name": "auditor",
+          "name": "runner",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -2027,7 +2027,7 @@
           "name": "PostCheck"
         },
         "taskQueue": {
-          "name": "auditor",
+          "name": "runner",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -2136,7 +2136,7 @@
           "name": "PostCheck"
         },
         "taskQueue": {
-          "name": "auditor",
+          "name": "runner",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -2250,7 +2250,7 @@
           "name": "OpenPR"
         },
         "taskQueue": {
-          "name": "auditor",
+          "name": "runner",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -2374,7 +2374,7 @@
           "name": "Notify"
         },
         "taskQueue": {
-          "name": "worker/ship/local/origin/feature1",
+          "name": "author/ship/local/origin/feature1",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -2483,7 +2483,7 @@
           "name": "Notify"
         },
         "taskQueue": {
-          "name": "worker/ship/local/origin/feature1",
+          "name": "author/ship/local/origin/feature1",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},

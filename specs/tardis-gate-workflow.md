@@ -9,13 +9,13 @@ order, fails loudly on worker death, routes rejections back, runs on start-dev a
 ## Solution sketch
 - `tardis request <sha>` = SignalWithStart `ShipWorkflow`, signal `new-head{sha}`, ID
   `ship/<owner>/<repo>/<branch>`; then hosts the worker's Temporal worker (workflow tasks on queue
-  `tardis`, activities on `worker/<wfID>`). `tardis wait` re-attaches that worker.
-- Per gate in resolved order: `WorkerReview(gate, sha)` on `worker/<wfID>` (runs the
+  `tardis`, activities on `author/<wfID>`). `tardis wait` re-attaches that worker.
+- Per gate in resolved order: `AuthorReview(gate, sha)` on `author/<wfID>` (runs the
   gate's `run` locally or waits for the check commit, pushes, returns its SHA) → `Attest`,
-  `Rerun` on queue `auditor` (-auditor) → verdict. Next gate only after a verdict.
+  `Rerun` on queue `runner` (-auditor) → verdict. Next gate only after a verdict.
 - Reject or `new-head` → cancel the in-flight gate, record the reason, restart at gate 0.
 - All green → `OpenPR` then poll/merge (-pr). Every state change is a `Notify(event)`
-  activity on `worker/<wfID>`; `tardis wait` prints them.
+  activity on `author/<wfID>`; `tardis wait` prints them.
 - `Executor.Run(ctx, Job, hb func(resume string)) (Result, error)`: `local` runs argv
   inline; `actions` stub documents dispatch → run-name lookup → `hb(runID)` → poll →
   artifact, returns `ErrNotImplemented`.
@@ -40,7 +40,7 @@ order, fails loudly on worker death, routes rejections back, runs on start-dev a
 - No push-triggered runs; `tardis request` or a `Ship-Request` trailer only.
 
 ## Decisions
-- Worker hosts the workflow + `worker/<wfID>` worker — worker review gets a workflow-
+- Worker hosts the workflow + `author/<wfID>` worker — worker review gets a workflow-
   enforced heartbeat; workflow tasks hold no secrets; a dead auditor still fails loudly to
   the worker (expert-go-aws, 0.8; spike: auditor-only polling left the run RUNNING 90 s)
 - Events = `Notify` activities — queries cost one Cloud Action each (expert-go-aws, 0.7)

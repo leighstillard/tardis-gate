@@ -10,8 +10,8 @@ import (
 
 // Task queues, signal and query names.
 const (
-	WorkflowQueue = "tardis"  // polled by the worker's tardis and by the auditor
-	AuditorQueue  = "auditor" // auditor activities only
+	WorkflowQueue = "tardis" // polled by the worker's tardis and by the auditor
+	AuditorQueue  = "runner" // auditor activities only; ponytail: v0.3 wire name, kept so in-flight runs survive an upgrade (rename with tardis-gate-yfg)
 	SignalNewHead = "new-head"
 	QueryHead     = "head"
 	QueryPass     = "pass"
@@ -25,7 +25,7 @@ const (
 	ActRerun        = "Rerun"
 	ActPostCheck    = "PostCheck"
 	ActOpenPR       = "OpenPR"
-	ActWorkerReview = "WorkerReview"
+	ActWorkerReview = "AuthorReview" // v0.3 wire name, as AuditorQueue
 	ActNotify       = "Notify"
 )
 
@@ -33,7 +33,7 @@ const (
 func WorkflowID(repoID, branch string) string { return "ship/" + repoID + "/" + branch }
 
 // WorkerQueue is where the worker's machine serves activities for one run.
-func WorkerQueue(workflowID string) string { return "worker/" + workflowID }
+func WorkerQueue(workflowID string) string { return "author/" + workflowID } // v0.3 wire name, as AuditorQueue
 
 // Input starts a ship run.
 type Input struct {

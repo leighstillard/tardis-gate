@@ -329,7 +329,7 @@ func current(c client.Client, wfID string, e ship.Event, stderr io.Writer) bool 
 func auditor(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("auditor", flag.ContinueOnError)
 	home, _ := os.UserCacheDir()
-	workDir := fs.String("work-dir", filepath.Join(home, "tardis", "auditor"), "where repository clones and the record of passed re-runs live")
+	workDir := fs.String("work-dir", filepath.Join(home, "tardis", "runner") /* v0.3 path: keeps its passes */, "where repository clones and the record of passed re-runs live")
 	rerun := fs.String("rerun-cmd", "", "shell command run per gate; exit 0 passes, 1 rejects (stand-in until provider re-runs). "+
 		"It runs in a clean checkout of the base, never the branch's code: read the change with git through $TARDIS_SHA and $TARDIS_BASE")
 	repos := map[string]bool{}
