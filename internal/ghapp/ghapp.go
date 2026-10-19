@@ -127,8 +127,11 @@ type CheckRun struct {
 	Name, Conclusion, Title, Summary, Text string
 }
 
-// maxOutput is GitHub's limit on a check run's summary and text.
-const maxOutput = 65535
+// GitHub's limits on a check run's title, and on its summary and text.
+const (
+	maxTitle  = 255
+	maxOutput = 65535
+)
 
 // PostCheck posts c on sha in repo.
 func (a *App) PostCheck(ctx context.Context, repo, sha string, c CheckRun) error {
@@ -138,7 +141,7 @@ func (a *App) PostCheck(ctx context.Context, repo, sha string, c CheckRun) error
 	}
 	err = a.do(ctx, "POST", "/repos/"+repo+"/check-runs", "token "+tok, map[string]any{
 		"name": c.Name, "head_sha": sha, "status": "completed", "conclusion": c.Conclusion,
-		"output": map[string]string{"title": c.Title, "summary": clip(c.Summary), "text": clip(c.Text)},
+		"output": map[string]string{"title": clipTo(c.Title, maxTitle), "summary": clip(c.Summary), "text": clip(c.Text)},
 	}, nil)
 	var se statusError
 	if errors.As(err, &se) && se == http.StatusUnauthorized {
@@ -149,9 +152,12 @@ func (a *App) PostCheck(ctx context.Context, repo, sha string, c CheckRun) error
 	return err
 }
 
-func clip(s string) string {
-	if len(s) > maxOutput {
-		s = s[:maxOutput-len("…")] + "…"
+func clip(s string) string { return clipTo(s, maxOutput) }
+
+// clipTo cuts s to at most n characters.
+func clipTo(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n-1]) + "…"
 	}
 	return s
 }

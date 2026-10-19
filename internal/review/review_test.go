@@ -30,6 +30,11 @@ func TestBlindAndJudgeParseFencedAnswers(t *testing.T) {
 	if _, err := Blind(ctx, func(context.Context, string, string) (string, error) { return "looks fine", nil }, "", "", ""); err == nil {
 		t.Error("an answer without JSON was accepted")
 	}
+	for _, out := range []string{`{}`, `{"missed": null, "disputed": []}`, `{"missed": []}`} {
+		if _, _, err := Judge(ctx, func(context.Context, string, string) (string, error) { return out, nil }, "", f); err == nil {
+			t.Errorf("judge accepted %s", out)
+		}
+	}
 }
 
 func TestRenderCaps(t *testing.T) {

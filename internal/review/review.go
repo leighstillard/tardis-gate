@@ -69,11 +69,14 @@ func Judge(ctx context.Context, ask provider.Func, summary string, findings []Fi
 	if err != nil {
 		return nil, nil, err
 	}
-	var v struct{ Missed, Disputed []string }
+	var v struct{ Missed, Disputed *[]string }
 	if err := decode(out, '{', '}', &v); err != nil {
 		return nil, nil, fmt.Errorf("judge: %w", err)
 	}
-	return v.Missed, v.Disputed, nil
+	if v.Missed == nil || v.Disputed == nil { // an answer that says nothing cannot pass a gate
+		return nil, nil, fmt.Errorf("judge: want both missed and disputed as arrays, got %.200q", out)
+	}
+	return *v.Missed, *v.Disputed, nil
 }
 
 // decode reads the JSON value between the first open and the last close in s:

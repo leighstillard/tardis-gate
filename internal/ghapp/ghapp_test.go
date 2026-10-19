@@ -17,6 +17,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestPostCheckAsTheApp(t *testing.T) {
@@ -78,7 +79,7 @@ func TestPostCheckAsTheApp(t *testing.T) {
 	ctx := context.Background()
 	long := strings.Repeat("x", 70000)
 	for range 2 {
-		if err := app.PostCheck(ctx, "o/r", "abc", CheckRun{Name: "tardis/review", Conclusion: "failure", Title: "t", Summary: "s", Text: long}); err != nil {
+		if err := app.PostCheck(ctx, "o/r", "abc", CheckRun{Name: "tardis/review", Conclusion: "failure", Title: long, Summary: "s", Text: long}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -86,7 +87,8 @@ func TestPostCheckAsTheApp(t *testing.T) {
 		t.Errorf("fetched %d installation tokens for two checks; want 1 (cached)", tokens)
 	}
 	out := posted["output"].(map[string]any)
-	if posted["name"] != "tardis/review" || posted["head_sha"] != "abc" || posted["conclusion"] != "failure" || len(out["text"].(string)) > maxOutput {
+	if posted["name"] != "tardis/review" || posted["head_sha"] != "abc" || posted["conclusion"] != "failure" ||
+		utf8.RuneCountInString(out["text"].(string)) > maxOutput || utf8.RuneCountInString(out["title"].(string)) > maxTitle {
 		t.Errorf("posted %v", posted)
 	}
 	if err := app.PostCheck(ctx, "o/other", "abc", CheckRun{Name: "x"}); err == nil {

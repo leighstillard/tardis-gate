@@ -62,6 +62,8 @@ func (c Config) Check() error {
 		if c.BaseURL != "" {
 			if u, err := url.Parse(c.BaseURL); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 				errs = append(errs, fmt.Errorf("base_url %q is not an http(s) URL", c.BaseURL))
+			} else if _, keyed := keys[u.Hostname()]; keyed && u.Scheme != "https" {
+				errs = append(errs, fmt.Errorf("base_url %q takes a key, so it must be https", c.BaseURL))
 			}
 		}
 		if c.Model == "" && (c.Type == "anthropic" || c.BaseURL != "" && strings.TrimSuffix(c.BaseURL, "/") != OpenRouter) {
@@ -105,15 +107,18 @@ func (c Config) Resolve(workerVendor string) Config {
 
 // ModelVendor is who makes the model, lower case, or "" if c does not say.
 func (c Config) ModelVendor() string {
-	switch {
+	// A known endpoint says who made the model; vendor cannot override it.
+	switch host := hostOf(c.BaseURL); {
+	case host == "api.anthropic.com":
+		return "anthropic"
+	case host == "api.openai.com":
+		return "openai"
+	case strings.TrimSuffix(c.BaseURL, "/") == OpenRouter:
+		return vendorOf(c.Model)
 	case c.Vendor != "":
 		return strings.ToLower(c.Vendor)
 	case c.Type == "anthropic":
 		return "anthropic"
-	case strings.TrimSuffix(c.BaseURL, "/") == OpenRouter:
-		return vendorOf(c.Model)
-	case hostOf(c.BaseURL) == "api.openai.com":
-		return "openai"
 	}
 	return ""
 }

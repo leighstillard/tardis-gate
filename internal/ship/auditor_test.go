@@ -96,6 +96,9 @@ func TestAuditorPostsSuccessOnlyForItsOwnPass(t *testing.T) {
 	if err := r.PostCheck(ctx, CheckIn{RepoURL: url, SHA: check, Gate: "verify", Conclusion: "failure"}); err != nil {
 		t.Errorf("failure: %v", err)
 	}
+	if err := r.PostCheck(ctx, CheckIn{RepoURL: url + ".evil", SHA: check, Gate: "verify", Conclusion: "failure"}); err == nil {
+		t.Error("posted a check for a repository the auditor does not serve")
+	}
 }
 
 func TestAuditorPassIsBoundToItsBaseAndClaim(t *testing.T) {
@@ -303,26 +306,25 @@ func TestRerunRejectsWhatTheClaimMisses(t *testing.T) {
 
 func TestMustDifferFromRefusesBeforeAnyCall(t *testing.T) {
 	// The worker's tool is anthropic/a/b.
-	for name, tc := range map[string]struct{ config, want string }{
-		"no worker_vendors":   {"", "set worker_vendors"},
-		"unlisted vendor":     {"worker_vendors: [openai]\n", `"anthropic" is not in worker_vendors`},
-		"same vendor":         {"worker_vendors: [anthropic, openai]\n", ""},
-		"reviewer is another": {"worker_vendors: [anthropic]\n", "pass"},
+	for name, tc := range map[string]struct{ config, tool, want string }{
+		"no worker_vendors":   {"", "", "set worker_vendors"},
+		"unlisted vendor":     {"worker_vendors: [openai]\n", "", `"anthropic" is not in worker_vendors`},
+		"same vendor":         {"worker_vendors: [anthropic, openai]\n", "openai/x/y", "both openai"},
+		"other is anyone":     {"worker_vendors: [other]\n", "other/x/y", `vendor is "other"`},
+		"reviewer is another": {"worker_vendors: [anthropic]\n", "", "pass"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			config := "  - name: review\n" + tc.config
 			r, url, base, check, m := modelFixture(t, "review", config)
-			if name == "same vendor" {
-				// Worker and reviewer both openai: rewrite the claim's tool.
+			if tc.tool != "" { // rewrite the claim's tool
 				w := t.TempDir()
 				run(t, "git", "-C", w, "clone", "-q", "-b", "feature", url, ".")
 				run(t, "git", "-C", w, "reset", "-q", "--hard", "HEAD^")
 				var err error
-				if check, err = chain.Commit(w, "review", "ok", "openai/x/y"); err != nil {
+				if check, err = chain.Commit(w, "review", "ok", tc.tool); err != nil {
 					t.Fatal(err)
 				}
 				run(t, "git", "-C", w, "push", "-q", "--force", "origin", "feature")
-				tc.want = "both openai"
 			}
 			v, err := r.Rerun(context.Background(), RerunIn{RepoURL: url, Base: "main", BaseID: base, Tip: check, Gate: "review"})
 			if err != nil {

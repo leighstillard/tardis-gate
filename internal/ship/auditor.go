@@ -16,6 +16,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"go.temporal.io/sdk/temporal"
 
@@ -95,6 +96,8 @@ func (rr rerun) differs() string {
 	switch {
 	case len(rr.m.WorkerVendors) == 0:
 		return "same vendor: cannot tell; set worker_vendors in .tardis/config.yml for a must_differ_from gate"
+	case vendor == "other": // any vendor not in the fixed list, so it could be the reviewer's
+		return "same vendor: cannot tell; the claim's vendor is \"other\""
 	case !slices.Contains(rr.m.WorkerVendors, vendor):
 		return fmt.Sprintf("same vendor: the claim's vendor %q is not in worker_vendors", vendor)
 	case pv == "":
@@ -402,13 +405,25 @@ func (r *Auditor) Rerun(ctx context.Context, in RerunIn) (Verdict, error) {
 			if len(disputed) > 0 {
 				why = append(why, "disputed: "+oneLine(disputed))
 			}
-			return Verdict{Reason: strings.Join(why, "; ") + "\n\nFindings:\n" + review.Render(findings, 50) + "\nReviewer: " + rr.cfg.String()}, nil
+			// ponytail: model text is unbounded; keep it well under Temporal's 2 MiB payload limit
+			return Verdict{Reason: trunc(strings.Join(why, "; "), 8<<10) + "\n\nFindings:\n" + trunc(review.Render(findings, 50), 48<<10) + "\nReviewer: " + rr.cfg.String()}, nil
 		}
 	}
 	if err := r.recordPass(rr.key); err != nil {
 		return Verdict{}, err
 	}
 	return Verdict{Pass: true}, nil
+}
+
+// trunc cuts s to at most n bytes on a rune boundary.
+func trunc(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
 }
 
 // capped keeps the first max bytes written to it and notes any more.
@@ -433,9 +448,13 @@ func (c *capped) Write(p []byte) (int, error) {
 // check names this tardis, its reference gates and, on a success, the
 // reviewer, so it is clear which policy passed it.
 func (r *Auditor) PostCheck(ctx context.Context, in CheckIn) error {
+	if !r.Repos[in.RepoURL] { // failures too: only listed repositories get checks
+		return temporal.NewNonRetryableApplicationError(
+			"repository "+in.RepoURL+" is not served by this auditor (tardis auditor --repo)", "Malformed", nil)
+	}
+	defer heartbeat(ctx)()
 	footer := fmt.Sprintf("tardis %s, reference gates %.12s", r.Version, gates.Digest)
 	if in.Conclusion == "success" {
-		defer heartbeat(ctx)()
 		unlock, err := r.lock(ctx, in.RepoURL)
 		if err != nil {
 			return err

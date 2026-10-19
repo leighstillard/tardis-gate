@@ -242,7 +242,9 @@ worker_vendors: [anthropic]   # whose claims a must_differ_from gate accepts
 With no `provider` section the reviewer is a free OpenRouter model from a vendor other
 than the worker's. That list of free models goes stale, so pin `model` for anything that
 matters. A gate with `must_differ_from: worker` is refused, before any model call, if the
-claim's vendor is not in `worker_vendors` or is the reviewer's own vendor.
+claim's vendor is not in `worker_vendors`, is `other`, or is the reviewer's own vendor.
+The reviewer's vendor comes from its endpoint (api.anthropic.com, api.openai.com, or the
+model prefix on OpenRouter); `provider.vendor` names it only for any other endpoint.
 
 API keys never come from the config. They come from the environment, and each key goes
 only to its own host, over https: `OPENROUTER_API_KEY` to openrouter.ai, `OPENAI_API_KEY`

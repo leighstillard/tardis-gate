@@ -37,6 +37,7 @@ func TestCheck(t *testing.T) {
 		{BaseURL: "http://localhost:11434/v1"},
 		{BaseURL: "ftp://x", Model: "m"},
 		{Model: "m", Command: []string{"x"}},
+		{BaseURL: "http://api.openai.com/v1", Model: "m"},
 	} {
 		if c.Check() == nil {
 			t.Errorf("%+v passed Check", c)
@@ -45,6 +46,23 @@ func TestCheck(t *testing.T) {
 	for _, c := range []Config{{}, {Type: "exec", Command: []string{"codex", "exec", "-"}, Vendor: "openai"}, {Type: "anthropic", Model: "claude"}} {
 		if err := c.Check(); err != nil {
 			t.Errorf("%+v: %v", c, err)
+		}
+	}
+}
+
+func TestKnownEndpointsOutrankVendor(t *testing.T) {
+	for _, tc := range []struct {
+		c    Config
+		want string
+	}{
+		{Config{Type: "anthropic", Vendor: "openai"}, "anthropic"},
+		{Config{BaseURL: "https://api.openai.com/v1", Vendor: "anthropic"}, "openai"},
+		{Config{Model: "qwen/q", Vendor: "anthropic"}, "qwen"},
+		{Config{BaseURL: "http://localhost:11434/v1", Vendor: "Google"}, "google"},
+		{Config{Type: "anthropic", BaseURL: "https://proxy.example/v1"}, "anthropic"},
+	} {
+		if got := tc.c.Resolve("").ModelVendor(); got != tc.want {
+			t.Errorf("%+v: vendor %q, want %q", tc.c, got, tc.want)
 		}
 	}
 }
