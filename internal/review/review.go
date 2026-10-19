@@ -17,6 +17,9 @@ import (
 // ponytail: one prompt; chunk the diff if real changes outgrow it.
 const MaxDiff = 256 << 10
 
+// MaxRunbook is the largest verify runbook a review takes.
+const MaxRunbook = 64 << 10
+
 // Finding is one problem the blind review reports.
 type Finding struct {
 	Path     string `json:"path"`

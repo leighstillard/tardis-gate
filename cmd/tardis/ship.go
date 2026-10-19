@@ -372,6 +372,10 @@ func auditor(args []string, stdout, stderr io.Writer) int {
 		}
 		uid, _ := strconv.ParseUint(u.Uid, 10, 32) // numeric on unix
 		gid, _ := strconv.ParseUint(u.Gid, 10, 32)
+		if uid == 0 || int(uid) == os.Geteuid() {
+			fmt.Fprintf(stderr, "auditor: --rerun-user %s must be an unprivileged user other than the auditor's\n", *rerunUser)
+			return 2
+		}
 		r.RerunUser = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
 	}
 	fmt.Fprintln(stderr, "tardis auditor: PRs are only logged until build 5.")

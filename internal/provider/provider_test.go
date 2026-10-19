@@ -38,6 +38,9 @@ func TestCheck(t *testing.T) {
 		{BaseURL: "ftp://x", Model: "m"},
 		{Model: "m", Command: []string{"x"}},
 		{BaseURL: "http://api.openai.com/v1", Model: "m"},
+		{BaseURL: "https://tok@llm.example/v1", Model: "m"},
+		{BaseURL: "https://llm.example/v1?key=x", Model: "m"},
+		{Type: "exec", Command: []string{"codex"}, Vendor: "openai", Model: "trusted"},
 	} {
 		if c.Check() == nil {
 			t.Errorf("%+v passed Check", c)

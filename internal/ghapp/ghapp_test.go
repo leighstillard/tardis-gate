@@ -20,6 +20,25 @@ import (
 	"unicode/utf8"
 )
 
+func TestRepo(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://github.com/O/R.git":      "o/r",
+		"https://GitHub.com/o/r/":         "o/r",
+		"git@github.com:o/r.git":          "o/r",
+		"ssh://git@github.com/o/r":        "o/r",
+		"ssh://git@github.com:22/o/r.git": "o/r",
+		"https://github.com/o":            "",
+		"https://github.com/o/r/x":        "",
+		"https://github.com.evil.com/o/r": "",
+		"ssh://evil@github.com/o/r":       "",
+		"http://gitlab.com/o/r":           "",
+	} {
+		if got, ok := Repo(in); got != want || ok != (want != "") {
+			t.Errorf("Repo(%q) = %q, %v; want %q", in, got, ok, want)
+		}
+	}
+}
+
 func TestPostCheckAsTheApp(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -93,19 +112,5 @@ func TestPostCheckAsTheApp(t *testing.T) {
 	}
 	if err := app.PostCheck(ctx, "o/other", "abc", CheckRun{Name: "x"}); err == nil {
 		t.Error("posting where the App is not installed succeeded")
-	}
-}
-
-func TestRepo(t *testing.T) {
-	for in, want := range map[string]string{
-		"https://github.com/O/R.git":   "o/r",
-		"git@github.com:o/r":           "o/r",
-		"ssh://git@github.com/o/r.git": "o/r",
-		"file:///tmp/r.git":            "",
-		"https://github.com/o/r/x":     "",
-	} {
-		if got, _ := Repo(in); got != want {
-			t.Errorf("Repo(%q) = %q, want %q", in, got, want)
-		}
 	}
 }

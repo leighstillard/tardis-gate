@@ -214,6 +214,9 @@ func (a *Worker) review(ctx context.Context, in WorkerReviewIn, base string) err
 	if err != nil {
 		return err
 	}
+	if res.ExitCode == ExitRetry {
+		return fmt.Errorf("%s exited %d (try again); its output is on the worker's machine", strings.Join(gate.Run, " "), res.ExitCode)
+	}
 	if res.ExitCode != 0 {
 		// What the gate printed stays on this machine: errors go into
 		// Temporal history, which every worker in the namespace can read.
@@ -293,6 +296,10 @@ func (a *Worker) Notify(ctx context.Context, e Event) error {
 }
 
 // heartbeat records a heartbeat every 10 s until the returned stop is called.
+// ExitRetry is the gate exit status for a failure worth retrying, such as
+// a model outage; every other non-zero status rejects the change.
+const ExitRetry = 75 // EX_TEMPFAIL
+
 func heartbeat(ctx context.Context) (stop func()) {
 	done := make(chan struct{})
 	go func() {

@@ -11,9 +11,11 @@ import (
 	"strings"
 
 	"github.com/leighstillard/tardis-gate/gates"
+	"github.com/leighstillard/tardis-gate/internal/chain"
 	"github.com/leighstillard/tardis-gate/internal/manifest"
 	"github.com/leighstillard/tardis-gate/internal/provider"
 	"github.com/leighstillard/tardis-gate/internal/review"
+	"github.com/leighstillard/tardis-gate/internal/ship"
 )
 
 // reviewCmd is the reference gates' run: the auditor's blind review, on the
@@ -42,12 +44,13 @@ func reviewCmd(args []string, stdout, stderr io.Writer) int {
 		return fail(err)
 	}
 	var prompt string
+	found := false
 	for _, g := range m.Gates {
 		if g.Name == gate {
-			prompt = g.Prompt
+			prompt, found = g.Prompt, true
 		}
 	}
-	if prompt == "" {
+	if !found {
 		return fail(fmt.Errorf("gate %s is not enabled on %.12s", gate, base))
 	}
 	if st, err := os.Stat(diffFile); err != nil {
@@ -61,9 +64,14 @@ func reviewCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	var runbook string
 	if p := os.Getenv("TARDIS_RUNBOOK"); gate == "verify" && p != "" {
-		b, err := exec.Command("git", "show", base+":"+p).Output() // the base's, as the auditor reads it
+		cmd := exec.Command("git", "--no-replace-objects", "show", base+":"+p) // the base's, as the auditor reads it
+		cmd.Env = chain.GitEnv()
+		b, err := cmd.Output()
 		if err != nil {
 			return fail(fmt.Errorf("runbook %s on %.12s: %w", p, base, err))
+		}
+		if len(b) > review.MaxRunbook {
+			return fail(fmt.Errorf("runbook %s is over %d KiB", p, review.MaxRunbook>>10))
 		}
 		runbook = string(b)
 	}
@@ -77,7 +85,8 @@ func reviewCmd(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 	findings, err := review.Blind(ctx, ask, prompt, string(diff), runbook)
 	if err != nil {
-		return fail(err)
+		fmt.Fprintln(stderr, "review:", err)
+		return ship.ExitRetry // the model failed, not the change: let the gate's retry have it
 	}
 	if len(findings) > 0 {
 		fmt.Fprintf(stdout, "%s found by %s:\n%s", gate, cfg, review.Render(findings, len(findings)))

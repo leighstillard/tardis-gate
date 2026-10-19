@@ -84,7 +84,7 @@ func (r *Auditor) load(dir, repoURL, gate, baseID, tip string) (rerun, error) {
 	}
 	vendor, _, _ := strings.Cut(tool, "/")
 	cfg := m.Provider.Resolve(vendor)
-	sum := sha256.Sum256([]byte(strings.Join([]string{repoURL, gate, baseID, check, cfg.Digest(), gates.Digest}, "\x00")))
+	sum := sha256.Sum256([]byte(strings.Join([]string{repoURL, gate, baseID, check, cfg.Digest(), gates.Digest, r.Version}, "\x00")))
 	return rerun{m: m, gate: m.Gates[i], summary: summary, tool: tool, cfg: cfg, key: hex.EncodeToString(sum[:])}, nil
 }
 
@@ -371,9 +371,13 @@ func (r *Auditor) Rerun(ctx context.Context, in RerunIn) (Verdict, error) {
 	}
 	var runbook string
 	if in.Gate == "verify" && rr.m.VerifyRunbook != "" {
-		if runbook, err = gitOut(ctx, dir, "show", in.BaseID+":"+rr.m.VerifyRunbook); err != nil {
+		rb := &capped{max: review.MaxRunbook}
+		if err := gitTo(ctx, dir, rb, "show", in.BaseID+":"+rr.m.VerifyRunbook); rb.over {
+			return Verdict{Reason: fmt.Sprintf("runbook %s is over %d KiB", rr.m.VerifyRunbook, review.MaxRunbook>>10)}, nil
+		} else if err != nil {
 			return Verdict{}, err
 		}
+		runbook = rb.String()
 	}
 	if rr.cfg.Type == "exec" && r.RerunUser == nil {
 		return Verdict{}, temporal.NewNonRetryableApplicationError(

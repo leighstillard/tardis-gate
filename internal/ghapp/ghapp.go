@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -62,13 +63,18 @@ func Load(id, keyFile string) (*App, error) {
 
 // Repo returns owner/repo for a GitHub remote URL.
 func Repo(remoteURL string) (string, bool) {
-	u := strings.TrimSuffix(strings.TrimSuffix(remoteURL, "/"), ".git")
-	for _, p := range []string{"https://github.com/", "ssh://git@github.com/", "git@github.com:"} {
-		if rest, ok := strings.CutPrefix(u, p); ok && strings.Count(rest, "/") == 1 {
-			return strings.ToLower(rest), true
-		}
+	var path string
+	if rest, ok := strings.CutPrefix(strings.ToLower(remoteURL), "git@github.com:"); ok { // scp-like
+		path = rest
+	} else if u, err := url.Parse(remoteURL); err == nil && strings.EqualFold(u.Hostname(), "github.com") &&
+		(u.Scheme == "https" || u.Scheme == "ssh" && u.User.Username() == "git") {
+		path = strings.TrimPrefix(u.Path, "/")
 	}
-	return "", false
+	path = strings.TrimSuffix(strings.TrimSuffix(path, "/"), ".git")
+	if o, r, ok := strings.Cut(path, "/"); !ok || o == "" || r == "" || strings.Contains(r, "/") {
+		return "", false
+	}
+	return strings.ToLower(path), true
 }
 
 func (a *App) jwt() (string, error) {

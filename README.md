@@ -253,7 +253,9 @@ as a local model, gets no key.
 
 The reference gates run `tardis review <gate>` on the worker's machine. It is the same
 blind review the auditor makes, so a worker sees what the auditor will look for. It warns
-when its reference gates differ from the auditor's tardis version.
+when its reference gates differ from the auditor's tardis version. When the model call
+fails it exits 75, and any gate that exits 75 gets its `retry` attempts; any other
+non-zero exit rejects the change.
 
 ## Running the auditor
 
@@ -268,7 +270,8 @@ runs are only logged. Each check names the tardis version, its reference gates' 
 and, on a pass, the reviewer.
 
 A provider of `type: exec` runs a local command, which is code. The auditor refuses one
-unless it is given `--rerun-user <user>`. The command then runs as that user, with an
+unless it is given `--rerun-user <user>`, which must be neither root nor the auditor's
+own user. The command then runs as that user, with an
 empty `HOME` and none of the auditor's environment. Limit that user's network to the
 provider with a firewall rule, for example with nftables:
 
