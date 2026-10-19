@@ -19,28 +19,28 @@ import (
 	"github.com/leighstillard/tardis-gate/internal/executor"
 )
 
-// runnerFixture is authorRepo's origin with a valid simplify check on top of
+// auditorFixture is workerRepo's origin with a valid simplify check on top of
 // the feature branch. It returns
-// the runner, the origin URL, main's commit and the check commit.
-func runnerFixture(t *testing.T) (*Runner, string, string, string) {
+// the auditor, the origin URL, main's commit and the check commit.
+func auditorFixture(t *testing.T) (*Auditor, string, string, string) {
 	t.Helper()
-	a, git := authorRepo(t)
+	a, git := workerRepo(t)
 	check, err := chain.Commit(a.Dir, "simplify", "ok", a.Tool)
 	if err != nil {
 		t.Fatal(err)
 	}
 	git("push", "-q", "origin", "feature")
 	url := git("remote", "get-url", "origin")
-	r := &Runner{Repos: map[string]bool{url: true}, WorkDir: t.TempDir(), RerunCmd: []string{"true"}, Exec: executor.Local{}, Log: io.Discard}
+	r := &Auditor{Repos: map[string]bool{url: true}, WorkDir: t.TempDir(), RerunCmd: []string{"true"}, Exec: executor.Local{}, Log: io.Discard}
 	return r, url, git("rev-parse", "main"), check
 }
 
-func TestRunnerPostsSuccessOnlyForItsOwnPass(t *testing.T) {
-	r, url, base, check := runnerFixture(t)
+func TestAuditorPostsSuccessOnlyForItsOwnPass(t *testing.T) {
+	r, url, base, check := auditorFixture(t)
 	ctx := context.Background()
 	success := CheckIn{RepoURL: url, Base: "main", BaseID: base, SHA: check, Gate: "simplify", Conclusion: "success"}
 
-	// A workflow asking for a success the runner never re-ran is refused.
+	// A workflow asking for a success the auditor never re-ran is refused.
 	if err := r.PostCheck(ctx, success); err == nil || !strings.Contains(err.Error(), "refusing") {
 		t.Fatalf("success without a re-run: err = %v, want refusal", err)
 	}
@@ -51,8 +51,8 @@ func TestRunnerPostsSuccessOnlyForItsOwnPass(t *testing.T) {
 	if err := r.PostCheck(ctx, success); err != nil {
 		t.Errorf("success after a passing re-run: %v", err)
 	}
-	// A restarted runner still knows what it passed.
-	restarted := &Runner{Repos: r.Repos, WorkDir: r.WorkDir, RerunCmd: r.RerunCmd, Exec: r.Exec, Log: io.Discard}
+	// A restarted auditor still knows what it passed.
+	restarted := &Auditor{Repos: r.Repos, WorkDir: r.WorkDir, RerunCmd: r.RerunCmd, Exec: r.Exec, Log: io.Discard}
 	if err := restarted.PostCheck(ctx, success); err != nil {
 		t.Errorf("success after a restart: %v", err)
 	}
@@ -62,8 +62,8 @@ func TestRunnerPostsSuccessOnlyForItsOwnPass(t *testing.T) {
 	}
 }
 
-func TestRunnerPassIsBoundToItsBaseAndClaim(t *testing.T) {
-	r, url, _, check := runnerFixture(t)
+func TestAuditorPassIsBoundToItsBaseAndClaim(t *testing.T) {
+	r, url, _, check := auditorFixture(t)
 	ctx := context.Background()
 	w := t.TempDir()
 	g := func(args ...string) string {
@@ -110,8 +110,8 @@ func TestRunnerPassIsBoundToItsBaseAndClaim(t *testing.T) {
 	}
 }
 
-func TestRunnerFollowsTheDefaultBranch(t *testing.T) {
-	r, url, _, check := runnerFixture(t)
+func TestAuditorFollowsTheDefaultBranch(t *testing.T) {
+	r, url, _, check := auditorFixture(t)
 	ctx := context.Background()
 	if out, err := r.Resolve(ctx, ResolveIn{RepoURL: url, SHA: check}); err != nil || out.Base != "main" {
 		t.Fatalf("resolve: %+v, %v", out, err)
@@ -132,7 +132,7 @@ func TestRunnerFollowsTheDefaultBranch(t *testing.T) {
 	g("commit", "-q", "-am", "trunk is the base")
 	g("push", "-q", "origin", "trunk")
 	run(t, "git", "--git-dir="+strings.TrimPrefix(url, "file://"), "symbolic-ref", "HEAD", "refs/heads/trunk")
-	// The head was cut from main, so the runner, now reading trunk's
+	// The head was cut from main, so the auditor, now reading trunk's
 	// policy, wants it rebased onto trunk.
 	if _, err := r.Resolve(ctx, ResolveIn{RepoURL: url, SHA: check}); err == nil || !strings.Contains(err.Error(), "rebase onto trunk") {
 		t.Errorf("resolve after the default branch moved: %v; want trunk as the base", err)
@@ -140,7 +140,7 @@ func TestRunnerFollowsTheDefaultBranch(t *testing.T) {
 }
 
 func TestOpenPRRefusesAMovedBase(t *testing.T) {
-	r, url, base, check := runnerFixture(t)
+	r, url, base, check := auditorFixture(t)
 	ctx := context.Background()
 	open := func(baseID string) error {
 		_, err := r.OpenPR(ctx, OpenPRIn{RepoURL: url, Branch: "feature", Base: "main", BaseID: baseID, Head: check})
@@ -170,8 +170,8 @@ func TestOpenPRRefusesAMovedBase(t *testing.T) {
 	}
 }
 
-func TestRunnerRefusesAHeadThatWouldStrandTheBase(t *testing.T) {
-	r, url, _, _ := runnerFixture(t)
+func TestAuditorRefusesAHeadThatWouldStrandTheBase(t *testing.T) {
+	r, url, _, _ := auditorFixture(t)
 	w := t.TempDir()
 	g := func(args ...string) string {
 		return strings.TrimSpace(run(t, "git", append([]string{"-C", w, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...))
@@ -186,9 +186,9 @@ func TestRunnerRefusesAHeadThatWouldStrandTheBase(t *testing.T) {
 	}
 }
 
-func TestRunnerRefusesAMergedSideCommitAsBase(t *testing.T) {
+func TestAuditorRefusesAMergedSideCommitAsBase(t *testing.T) {
 	// Reachable from main through a merge, but main never pointed at it.
-	r, url, _, check := runnerFixture(t)
+	r, url, _, check := auditorFixture(t)
 	w := t.TempDir()
 	g := func(args ...string) string {
 		return strings.TrimSpace(run(t, "git", append([]string{"-C", w, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...))
@@ -205,10 +205,10 @@ func TestRunnerRefusesAMergedSideCommitAsBase(t *testing.T) {
 	}
 }
 
-func TestRunnerIgnoresATagNamedLikeTheBase(t *testing.T) {
+func TestAuditorIgnoresATagNamedLikeTheBase(t *testing.T) {
 	// A tag called origin/main would win over the remote-tracking branch if
-	// the runner named refs in short.
-	r, url, base, check := runnerFixture(t)
+	// the auditor named refs in short.
+	r, url, base, check := auditorFixture(t)
 	run(t, "git", "--git-dir="+strings.TrimPrefix(url, "file://"), "tag", "origin/main", check)
 	run(t, "git", "--git-dir="+strings.TrimPrefix(url, "file://"), "tag", "origin/HEAD", check)
 	out, err := r.Resolve(context.Background(), ResolveIn{RepoURL: url, SHA: check})
@@ -218,7 +218,7 @@ func TestRunnerIgnoresATagNamedLikeTheBase(t *testing.T) {
 }
 
 func TestAPassFromAReplacedReviewerCountsForNothing(t *testing.T) {
-	r, url, base, check := runnerFixture(t)
+	r, url, base, check := auditorFixture(t)
 	ctx := context.Background()
 	if v, err := r.Rerun(ctx, RerunIn{RepoURL: url, Base: "main", BaseID: base, Tip: check, Gate: "simplify"}); err != nil || !v.Pass {
 		t.Fatalf("rerun: %+v, %v", v, err)
@@ -230,7 +230,7 @@ func TestAPassFromAReplacedReviewerCountsForNothing(t *testing.T) {
 }
 
 func TestRerunIsNotRepeatedOnceRecorded(t *testing.T) {
-	r, url, base, check := runnerFixture(t)
+	r, url, base, check := auditorFixture(t)
 	ctx := context.Background()
 	// Passes the first time; rejects if it ever runs again.
 	marker := filepath.Join(t.TempDir(), "ran")
@@ -246,8 +246,8 @@ func TestRerunIsNotRepeatedOnceRecorded(t *testing.T) {
 	}
 }
 
-func TestRunnerLockGivesUpWithItsContext(t *testing.T) {
-	r, url, _, _ := runnerFixture(t)
+func TestAuditorLockGivesUpWithItsContext(t *testing.T) {
+	r, url, _, _ := auditorFixture(t)
 	unlock, err := r.lock(context.Background(), url)
 	if err != nil {
 		t.Fatal(err)
@@ -260,10 +260,10 @@ func TestRunnerLockGivesUpWithItsContext(t *testing.T) {
 	}
 }
 
-func TestRunnerRecoversFromAnInterruptedClone(t *testing.T) {
-	// A clone killed half way leaves a .git behind; the runner must not
+func TestAuditorRecoversFromAnInterruptedClone(t *testing.T) {
+	// A clone killed half way leaves a .git behind; the auditor must not
 	// keep failing on it.
-	r, url, base, check := runnerFixture(t)
+	r, url, base, check := auditorFixture(t)
 	sum := sha256.Sum256([]byte(url))
 	if err := os.MkdirAll(filepath.Join(r.WorkDir, hex.EncodeToString(sum[:8]), ".git"), 0o700); err != nil {
 		t.Fatal(err)
@@ -285,8 +285,8 @@ func TestGitOutStopsWithItsContext(t *testing.T) {
 	}
 }
 
-func TestRunnerRefusesABaseItDidNotChoose(t *testing.T) {
-	r, url, base, check := runnerFixture(t)
+func TestAuditorRefusesABaseItDidNotChoose(t *testing.T) {
+	r, url, base, check := auditorFixture(t)
 	ctx := context.Background()
 	// The base comes from the default branch's manifest, not the request.
 	if out, err := r.Resolve(ctx, ResolveIn{RepoURL: url, SHA: check}); err != nil || out.Base != "main" || out.BaseID != base {
@@ -301,8 +301,8 @@ func TestRunnerRefusesABaseItDidNotChoose(t *testing.T) {
 	}
 }
 
-func TestRunnerRerunJudgesTheChainFirst(t *testing.T) {
-	r, url, base, check := runnerFixture(t)
+func TestAuditorRerunJudgesTheChainFirst(t *testing.T) {
+	r, url, base, check := auditorFixture(t)
 	// The code commit under the check has no check of its own for verify.
 	code := strings.TrimSpace(run(t, "git", "-C", r.WorkDir, "--git-dir="+filepath.Join(strings.TrimPrefix(url, "file://")), "rev-parse", check+"^"))
 	v, err := r.Rerun(context.Background(), RerunIn{RepoURL: url, Base: "main", BaseID: base, Tip: code, Gate: "simplify"})

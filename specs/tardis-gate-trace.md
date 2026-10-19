@@ -1,5 +1,5 @@
 # tardis-gate: traced tier (worker OTel)      appetite: 3 Codex windows / 2 Claude reviews
-Build 6. Needs: -evidence, -manifest, -workflow, -runner. Feeds: brokered tier (backlog).
+Build 6. Needs: -evidence, -manifest, -workflow, -auditor. Feeds: brokered tier (backlog).
 
 ## Problem
 A verdict proves the code survives review, not that the worker ran the review it claims.
@@ -20,7 +20,7 @@ forging means fabricating a whole consistent trace, not one commit.
 - Auditor activity `Trace` between `Attest` and `Rerun` rejects: digest-mismatch,
   stale-nonce, out-of-window, model-mismatch, diff-not-read:<path>, gate-cmd-missing,
   seq-gap. Passing `Trace` only lets `Rerun` proceed.
-- Touches: `internal/{trace,chain,workflow,runner,manifest}`, `cmd/tardis`. Not: judge.
+- Touches: `internal/{trace,chain,workflow,auditor,manifest}`, `cmd/tardis`. Not: judge.
 
 ## Acceptance checks
 - `go test ./internal/...` → pass, no network, OTLP fixtures from Claude 2.1, Codex 0.137

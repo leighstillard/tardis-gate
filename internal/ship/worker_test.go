@@ -13,9 +13,9 @@ import (
 	"github.com/leighstillard/tardis-gate/internal/executor"
 )
 
-// authorRepo is a clone of a bare origin with main, enrolled with one gate
+// workerRepo is a clone of a bare origin with main, enrolled with one gate
 // (simplify), pushed and feature checked out one code commit ahead.
-func authorRepo(t *testing.T) (*Author, func(...string) string) {
+func workerRepo(t *testing.T) (*Worker, func(...string) string) {
 	t.Helper()
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -52,19 +52,19 @@ func authorRepo(t *testing.T) (*Author, func(...string) string) {
 	}
 	git("add", "a.txt")
 	git("commit", "-q", "-m", "A")
-	return &Author{Dir: dir, Remote: "origin", Branch: "feature", Tool: "anthropic/a/b"}, git
+	return &Worker{Dir: dir, Remote: "origin", Branch: "feature", Tool: "anthropic/a/b"}, git
 }
 
-// reviewIn is an AuthorReviewIn for gate on the current HEAD, pinned to main.
-func reviewIn(git func(...string) string, gate string) AuthorReviewIn {
+// reviewIn is an WorkerReviewIn for gate on the current HEAD, pinned to main.
+func reviewIn(git func(...string) string, gate string) WorkerReviewIn {
 	tip := git("rev-parse", "HEAD")
-	return AuthorReviewIn{Gate: gate, Base: "main", BaseID: git("rev-parse", "main"), Code: tip, Tip: tip}
+	return WorkerReviewIn{Gate: gate, Base: "main", BaseID: git("rev-parse", "main"), Code: tip, Tip: tip}
 }
 
-func TestAuthorReviewRunsNoPolicyFromAnUncheckedBase(t *testing.T) {
+func TestWorkerReviewRunsNoPolicyFromAnUncheckedBase(t *testing.T) {
 	// The workflow names the base; it must not be able to point this machine
 	// at gate commands from just any commit or branch.
-	a, git := authorRepo(t)
+	a, git := workerRepo(t)
 	git("push", "-q", "origin", "feature")
 	// A side branch merged into main: its commit is reachable from main
 	// without main ever having pointed at it.
@@ -75,21 +75,21 @@ func TestAuthorReviewRunsNoPolicyFromAnUncheckedBase(t *testing.T) {
 	git("merge", "-q", "--no-ff", "-m", "merge side", "side")
 	git("push", "-q", "origin", "main")
 	git("checkout", "-q", "feature")
-	for _, in := range []AuthorReviewIn{
+	for _, in := range []WorkerReviewIn{
 		{Gate: "simplify", Base: "feature", BaseID: git("rev-parse", "feature")},
 		{Gate: "simplify", Base: "main", BaseID: git("rev-parse", "feature")},
 		{Gate: "simplify", Base: "main", BaseID: side},
 	} {
 		in.Code, in.Tip = git("rev-parse", "HEAD"), git("rev-parse", "HEAD")
-		if _, err := a.AuthorReview(context.Background(), in); err == nil || !strings.Contains(err.Error(), "base") {
+		if _, err := a.WorkerReview(context.Background(), in); err == nil || !strings.Contains(err.Error(), "base") {
 			t.Errorf("base %s at %.7s: err = %v, want a refusal", in.Base, in.BaseID, err)
 		}
 	}
 }
 
-func TestAuthorGateGetsNoTemporalKeyAndKeepsItsOutput(t *testing.T) {
+func TestWorkerGateGetsNoTemporalKeyAndKeepsItsOutput(t *testing.T) {
 	t.Setenv("TEMPORAL_API_KEY", "sentinel-key")
-	a, git := authorRepo(t)
+	a, git := workerRepo(t)
 	var out strings.Builder
 	a.Exec, a.Out = executor.Local{}, &out
 	git("checkout", "-q", "main")
@@ -104,7 +104,7 @@ func TestAuthorGateGetsNoTemporalKeyAndKeepsItsOutput(t *testing.T) {
 	git("commit", "-q", "-m", "simplify prints")
 	git("push", "-q", "origin", "main")
 	git("checkout", "-q", "feature")
-	_, err := a.AuthorReview(context.Background(), reviewIn(git, "simplify"))
+	_, err := a.WorkerReview(context.Background(), reviewIn(git, "simplify"))
 	if err == nil || strings.Contains(err.Error(), "private detail") || !strings.Contains(err.Error(), "exited 3") {
 		t.Errorf("err = %v; want the exit code without the output", err)
 	}
@@ -113,17 +113,17 @@ func TestAuthorGateGetsNoTemporalKeyAndKeepsItsOutput(t *testing.T) {
 	}
 }
 
-func TestAuthorReviewStaysOnItsBranch(t *testing.T) {
+func TestWorkerReviewStaysOnItsBranch(t *testing.T) {
 	// Another branch at the same commit: the check must not land on it.
-	a, git := authorRepo(t)
+	a, git := workerRepo(t)
 	git("checkout", "-q", "-b", "other")
-	if _, err := a.AuthorReview(context.Background(), reviewIn(git, "simplify")); err == nil || !strings.Contains(err.Error(), "no longer on feature") {
+	if _, err := a.WorkerReview(context.Background(), reviewIn(git, "simplify")); err == nil || !strings.Contains(err.Error(), "no longer on feature") {
 		t.Errorf("review on branch other: err = %v", err)
 	}
 }
 
-func TestAuthorReviewRefusesOversizedFindings(t *testing.T) {
-	a, git := authorRepo(t)
+func TestWorkerReviewRefusesOversizedFindings(t *testing.T) {
+	a, git := workerRepo(t)
 	a.Exec, a.Out = executor.Local{}, io.Discard
 	git("checkout", "-q", "main")
 	gate := filepath.Join(a.Dir, ".tardis", "gates", "simplify", "gate.yml")
@@ -137,20 +137,20 @@ func TestAuthorReviewRefusesOversizedFindings(t *testing.T) {
 	git("commit", "-q", "-m", "simplify writes too much")
 	git("push", "-q", "origin", "main")
 	git("checkout", "-q", "feature")
-	if _, err := a.AuthorReview(context.Background(), reviewIn(git, "simplify")); err == nil || !strings.Contains(err.Error(), "over 64 KiB") {
+	if _, err := a.WorkerReview(context.Background(), reviewIn(git, "simplify")); err == nil || !strings.Contains(err.Error(), "over 64 KiB") {
 		t.Errorf("err = %v; want oversized findings refused", err)
 	}
 }
 
-func TestAuthorReviewRetryResumesFromItsOwnCheck(t *testing.T) {
-	a, git := authorRepo(t)
+func TestWorkerReviewRetryResumesFromItsOwnCheck(t *testing.T) {
+	a, git := workerRepo(t)
 	in := reviewIn(git, "simplify")
 	// The first attempt wrote its check, then lost the push.
 	check, err := chain.Commit(a.Dir, "simplify", "ok", a.Tool)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := a.AuthorReview(context.Background(), in)
+	got, err := a.WorkerReview(context.Background(), in)
 	if err != nil {
 		t.Fatalf("retry: %v", err)
 	}
@@ -159,31 +159,31 @@ func TestAuthorReviewRetryResumesFromItsOwnCheck(t *testing.T) {
 	}
 }
 
-func TestAuthorReviewRefusesARealMove(t *testing.T) {
-	a, git := authorRepo(t)
+func TestWorkerReviewRefusesARealMove(t *testing.T) {
+	a, git := workerRepo(t)
 	in := reviewIn(git, "simplify")
 	git("commit", "-q", "--allow-empty", "-m", "ship-check: verify") // not this gate's check
-	_, err := a.AuthorReview(context.Background(), in)
+	_, err := a.WorkerReview(context.Background(), in)
 	if err == nil || !strings.Contains(err.Error(), "branch moved") {
 		t.Errorf("err = %v, want branch moved", err)
 	}
 }
 
-func TestAuthorReviewRefusesADirtyWorkingCopy(t *testing.T) {
-	a, git := authorRepo(t)
+func TestWorkerReviewRefusesADirtyWorkingCopy(t *testing.T) {
+	a, git := workerRepo(t)
 	if err := os.WriteFile(filepath.Join(a.Dir, "fix.go"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := a.AuthorReview(context.Background(), reviewIn(git, "simplify"))
+	_, err := a.WorkerReview(context.Background(), reviewIn(git, "simplify"))
 	if err == nil || !strings.Contains(err.Error(), "uncommitted or untracked") {
 		t.Errorf("err = %v, want a dirty-tree refusal", err)
 	}
 }
 
-func TestAuthorReviewFetchesThePinnedBase(t *testing.T) {
+func TestWorkerReviewFetchesThePinnedBase(t *testing.T) {
 	// The base moved on the remote after this clone last fetched it; the run
-	// is pinned to the new commit, which the author must fetch, not refuse.
-	a, git := authorRepo(t)
+	// is pinned to the new commit, which the worker must fetch, not refuse.
+	a, git := workerRepo(t)
 	in := reviewIn(git, "simplify")
 	other := t.TempDir()
 	if out, err := exec.Command("git", "clone", "-q", git("remote", "get-url", "origin"), other).CombinedOutput(); err != nil {
@@ -198,7 +198,7 @@ func TestAuthorReviewFetchesThePinnedBase(t *testing.T) {
 		t.Fatal(err)
 	}
 	in.Tip = in.Code // the retry path: HEAD is this gate's check on in.Tip
-	if _, err := a.AuthorReview(context.Background(), in); err != nil {
+	if _, err := a.WorkerReview(context.Background(), in); err != nil {
 		t.Errorf("pinned base %s not fetched: %v", in.BaseID, err)
 	}
 }

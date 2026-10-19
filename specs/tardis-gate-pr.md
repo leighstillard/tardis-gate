@@ -1,10 +1,10 @@
 # tardis-gate: PR gate, ruleset & events       appetite: 2 Codex windows / 1 Claude review
-Build 5/5. Needs: -workflow, -runner. Feeds: nothing.
+Build 5/5. Needs: -workflow, -auditor. Feeds: nothing.
 
 ## Problem
 Anyone can open and merge a PR regardless of review state. Fixed when only the App opens
 the PR, only once every gate is green on head; any other PR is marked incomplete and
-unmergeable; and the author's session hears of PR creation, CI and merge without polling.
+unmergeable; and the worker's session hears of PR creation, CI and merge without polling.
 
 ## Solution sketch
 - Activity `OpenPR(branch, head)`: re-reads check runs on head from GitHub; if every

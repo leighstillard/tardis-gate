@@ -23,7 +23,7 @@ type fake struct {
 	mu      sync.Mutex
 	gates   []string
 	retry   int      // every gate's retry count
-	calls   []string // "author:<gate>@<code>", "rerun:<gate>@<tip>", ...
+	calls   []string // "worker:<gate>@<code>", "rerun:<gate>@<tip>", ...
 	events  []string
 	passOf  map[string]string // event → its pass ID
 	checks  []string
@@ -47,11 +47,11 @@ func (f *fake) register(env *testsuite.TestWorkflowEnvironment) {
 		}
 		return out, nil
 	})
-	reg(ActAuthorReview, func(_ context.Context, in AuthorReviewIn) (string, error) {
+	reg(ActWorkerReview, func(_ context.Context, in WorkerReviewIn) (string, error) {
 		if in.Base != "main" || in.BaseID != "b0" {
-			return "", fmt.Errorf("author review got base %q at %q, want the resolved main at b0", in.Base, in.BaseID)
+			return "", fmt.Errorf("worker review got base %q at %q, want the resolved main at b0", in.Base, in.BaseID)
 		}
-		f.log("author:" + in.Gate + "@" + in.Code)
+		f.log("worker:" + in.Gate + "@" + in.Code)
 		return in.Tip + "+" + in.Gate, nil // a new check commit on top
 	})
 	reg(ActAttest, func(_ context.Context, in AttestIn) (map[string]string, error) {
@@ -138,9 +138,9 @@ func TestAllGatesPassOpensOnePR(t *testing.T) {
 		t.Errorf("url %q, OpenPR calls %d", url, f.openPRs)
 	}
 	want := []string{
-		"author:simplify@c1", "rerun:simplify@c1+simplify",
-		"author:verify@c1", "rerun:verify@c1+simplify+verify",
-		"author:review@c1", "rerun:review@c1+simplify+verify+review",
+		"worker:simplify@c1", "rerun:simplify@c1+simplify",
+		"worker:verify@c1", "rerun:verify@c1+simplify+verify",
+		"worker:review@c1", "rerun:review@c1+simplify+verify+review",
 	}
 	if !reflect.DeepEqual(f.calls, want) {
 		t.Errorf("calls\n got %v\nwant %v", f.calls, want)
@@ -210,14 +210,14 @@ func TestShippingTheBaseBranchIsRefused(t *testing.T) {
 	}
 }
 
-func TestBranchMovedAtOpenPRTellsTheAuthor(t *testing.T) {
+func TestBranchMovedAtOpenPRTellsTheWorker(t *testing.T) {
 	// The branch moved without a tardis request, so no new head is coming.
 	f := &fake{gates: []string{"simplify"}, openErr: temporal.NewNonRetryableApplicationError("moved", "BranchMoved", nil)}
 	env := newEnv(t, f)
 	env.RegisterDelayedCallback(func() { env.CancelWorkflow() }, time.Hour) // it waits for a new head
 	env.ExecuteWorkflow(Ship, in)
 	if !contains(f.events, "open-pr failed: the branch moved past the reviewed head; run tardis request on the new head") {
-		t.Errorf("events %v; want the author told the branch moved", f.events)
+		t.Errorf("events %v; want the worker told the branch moved", f.events)
 	}
 }
 
@@ -243,7 +243,7 @@ func TestNewHeadDuringOpenPRIsNotLost(t *testing.T) {
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"author:simplify@c1", "rerun:simplify@c1+simplify", "author:simplify@c2", "rerun:simplify@c2+simplify"}
+	want := []string{"worker:simplify@c1", "rerun:simplify@c1+simplify", "worker:simplify@c2", "rerun:simplify@c2+simplify"}
 	if !reflect.DeepEqual(f.calls, want) {
 		t.Errorf("calls\n got %v\nwant %v", f.calls, want)
 	}
@@ -268,15 +268,15 @@ func TestRejectThenNewHeadRerunsFromFirstGate(t *testing.T) {
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
 	}
-	var authors []string
+	var workers []string
 	for _, c := range f.calls {
-		if strings.HasPrefix(c, "author:") {
-			authors = append(authors, c)
+		if strings.HasPrefix(c, "worker:") {
+			workers = append(workers, c)
 		}
 	}
-	want := []string{"author:simplify@c1", "author:verify@c1", "author:simplify@c2", "author:verify@c2", "author:review@c2"}
-	if !reflect.DeepEqual(authors, want) {
-		t.Errorf("author calls\n got %v\nwant %v", authors, want)
+	want := []string{"worker:simplify@c1", "worker:verify@c1", "worker:simplify@c2", "worker:verify@c2", "worker:review@c2"}
+	if !reflect.DeepEqual(workers, want) {
+		t.Errorf("worker calls\n got %v\nwant %v", workers, want)
 	}
 	if !contains(f.events, "verify rejected: planted bug in x.go") {
 		t.Errorf("no rejection event: %v", f.events)
@@ -286,7 +286,7 @@ func TestRejectThenNewHeadRerunsFromFirstGate(t *testing.T) {
 	}
 }
 
-func TestRunnerDeathIsReportedAndCheckFails(t *testing.T) {
+func TestAuditorDeathIsReportedAndCheckFails(t *testing.T) {
 	f := &fake{gates: []string{"simplify", "verify"}}
 	f.rerun = func(in RerunIn) (Verdict, error) {
 		if in.Gate == "verify" {
@@ -317,7 +317,7 @@ func TestRunnerDeathIsReportedAndCheckFails(t *testing.T) {
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
 	}
-	if !contains(f.events, "verify failed: runner died") {
+	if !contains(f.events, "verify failed: auditor died") {
 		t.Errorf("events %v", f.events)
 	}
 	if !contains(f.checks, "tardis/verify failure") {
@@ -332,14 +332,14 @@ func TestGateRetryCountIsHonoured(t *testing.T) {
 		env := newEnv(t, f)
 		env.RegisterDelayedCallback(func() { env.CancelWorkflow() }, time.Hour) // it waits for a fix
 		env.ExecuteWorkflow(Ship, in)
-		if got := len(f.calls) - 1; got != want { // calls: one author review, then the reruns
+		if got := len(f.calls) - 1; got != want { // calls: one worker review, then the reruns
 			t.Errorf("retry %d: %d rerun attempts, want %d (%v)", retry, got, want, f.calls)
 		}
 	}
 }
 
-func TestFailureCheckDoesNotWaitForTheAuthor(t *testing.T) {
-	// The author's notification is stuck until the failure check is posted;
+func TestFailureCheckDoesNotWaitForTheWorker(t *testing.T) {
+	// The worker's notification is stuck until the failure check is posted;
 	// sent one after the other, the check would never go out.
 	f := &fake{gates: []string{"simplify"}}
 	f.rerun = func(RerunIn) (Verdict, error) { return Verdict{Reason: "no"}, nil }
@@ -376,7 +376,7 @@ func TestQueuedSignalsKeepTheNewestHead(t *testing.T) {
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"author:simplify@c1", "rerun:simplify@c1+simplify", "author:simplify@c3", "rerun:simplify@c3+simplify"}
+	want := []string{"worker:simplify@c1", "rerun:simplify@c1+simplify", "worker:simplify@c3", "rerun:simplify@c3+simplify"}
 	if !reflect.DeepEqual(f.calls, want) {
 		t.Errorf("calls\n got %v\nwant %v", f.calls, want)
 	}
@@ -434,7 +434,7 @@ func TestGateRetriesFitTheDeadline(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := s.NewTestWorkflowEnvironment()
 	env.ExecuteWorkflow(func(ctx workflow.Context) (time.Duration, error) {
-		return workflow.GetActivityOptions(gateRetries(runnerOpts(ctx, 20*time.Minute), 10)).ScheduleToCloseTimeout, nil
+		return workflow.GetActivityOptions(gateRetries(auditorOpts(ctx, 20*time.Minute), 10)).ScheduleToCloseTimeout, nil
 	})
 	var got time.Duration
 	if err := env.GetWorkflowResult(&got); err != nil || got < 11*20*time.Minute {
@@ -453,14 +453,14 @@ func TestAbandonedAfterAWeekWithoutAFix(t *testing.T) {
 	}
 }
 
-func TestReasonNamesDeadRunner(t *testing.T) {
-	if got := reason(temporal.NewHeartbeatTimeoutError(), "runner"); got != "runner died" {
+func TestReasonNamesDeadAuditor(t *testing.T) {
+	if got := reason(temporal.NewHeartbeatTimeoutError(), "auditor"); got != "auditor died" {
 		t.Errorf("reason = %q", got)
 	}
-	if got := reason(temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_START_TO_CLOSE, nil), "author"); got != "took longer than its time limit" {
+	if got := reason(temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_START_TO_CLOSE, nil), "worker"); got != "took longer than its time limit" {
 		t.Errorf("reason = %q", got)
 	}
-	if got := reason(fmt.Errorf("boom"), "runner"); got != "boom" {
+	if got := reason(fmt.Errorf("boom"), "auditor"); got != "boom" {
 		t.Errorf("reason = %q", got)
 	}
 }

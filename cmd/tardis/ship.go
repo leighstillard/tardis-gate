@@ -30,13 +30,13 @@ import (
 	"github.com/leighstillard/tardis-gate/internal/ship"
 )
 
-// authorFlags are shared by request and wait.
-type authorFlags struct{ repo, remote, tool *string }
+// workerFlags are shared by request and wait.
+type workerFlags struct{ repo, remote, tool *string }
 
-func addAuthorFlags(fs *flag.FlagSet) authorFlags {
-	return authorFlags{
+func addWorkerFlags(fs *flag.FlagSet) workerFlags {
+	return workerFlags{
 		repo:   fs.String("repo", ".", "working copy of the branch to ship"),
-		remote: fs.String("remote", "origin", "remote the runner fetches from"),
+		remote: fs.String("remote", "origin", "remote the auditor fetches from"),
 		tool:   fs.String("tool", os.Getenv("TARDIS_TOOL"), "<vendor>/<tool>/<model> for check commits this machine writes (default $TARDIS_TOOL)"),
 	}
 }
@@ -66,7 +66,7 @@ func branchRun(repo, remote string) (ship.Input, string, error) {
 	if err := checkRemote(url); err != nil {
 		return ship.Input{}, "", err
 	}
-	// The runner reads the policy from the base branch; this only catches a
+	// The auditor reads the policy from the base branch; this only catches a
 	// working copy that is not enrolled, or on the base itself, before
 	// anything starts. The workflow checks the base again once resolved.
 	m, err := manifest.Load(repo)
@@ -121,7 +121,7 @@ func repoID(remoteURL string) string {
 
 func request(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("request", flag.ContinueOnError)
-	af := addAuthorFlags(fs)
+	af := addWorkerFlags(fs)
 	pos, code, ok := parseRange(fs, "request [<sha>] --tool <vendor/tool/model>", args, 0, 1, stderr)
 	if !ok {
 		return code
@@ -160,8 +160,8 @@ func request(args []string, stdout, stderr io.Writer) int {
 	}
 	defer c.Close()
 	ctx := context.Background()
-	if d, err := c.DescribeTaskQueue(ctx, ship.RunnerQueue, enumspb.TASK_QUEUE_TYPE_ACTIVITY); err == nil && len(d.GetPollers()) == 0 {
-		fmt.Fprintln(stderr, "request: warning: no runner is polling; reviews wait until one starts")
+	if d, err := c.DescribeTaskQueue(ctx, ship.AuditorQueue, enumspb.TASK_QUEUE_TYPE_ACTIVITY); err == nil && len(d.GetPollers()) == 0 {
+		fmt.Fprintln(stderr, "request: warning: no auditor is polling; reviews wait until one starts")
 	}
 	if _, err := c.SignalWithStartWorkflow(ctx, wfID, ship.SignalNewHead, ship.NewHead{SHA: head},
 		client.StartWorkflowOptions{ID: wfID, TaskQueue: ship.WorkflowQueue}, ship.WorkflowName, in); err != nil {
@@ -219,7 +219,7 @@ func lockAttach(repo string) (release func(), holder int, err error) {
 
 func wait(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("wait", flag.ContinueOnError)
-	af := addAuthorFlags(fs)
+	af := addWorkerFlags(fs)
 	if _, code, ok := parse(fs, "wait", args, 0, stderr); !ok {
 		return code
 	}
@@ -251,18 +251,18 @@ func wait(args []string, stdout, stderr io.Writer) int {
 	return attach(c, wfID, *af.repo, *af.remote, in.Branch, *af.tool, stdout, stderr)
 }
 
-// attach serves the run's workflow and author activities until a terminal
+// attach serves the run's workflow and worker activities until a terminal
 // event from the current pass: 0 when the PR is open, 1 when a gate rejected
 // or failed.
 func attach(c client.Client, wfID, repo, remote, branch, tool string, stdout, stderr io.Writer) int {
 	events := make(chan ship.Event, 8)
-	a := &ship.Author{Dir: repo, Remote: remote, Branch: branch, Tool: tool, Exec: executor.Local{}, Out: stdout, Events: events}
+	a := &ship.Worker{Dir: repo, Remote: remote, Branch: branch, Tool: tool, Exec: executor.Local{}, Out: stdout, Events: events}
 
 	wfw := workflowWorker(c)
 	// Time to finish an in-flight activity, so a notification is acknowledged
 	// rather than delivered again to the next attachment.
-	aw := worker.New(c, ship.AuthorQueue(wfID), worker.Options{WorkerStopTimeout: 10 * time.Second})
-	aw.RegisterActivityWithOptions(a.AuthorReview, activity.RegisterOptions{Name: ship.ActAuthorReview})
+	aw := worker.New(c, ship.WorkerQueue(wfID), worker.Options{WorkerStopTimeout: 10 * time.Second})
+	aw.RegisterActivityWithOptions(a.WorkerReview, activity.RegisterOptions{Name: ship.ActWorkerReview})
 	aw.RegisterActivityWithOptions(a.Notify, activity.RegisterOptions{Name: ship.ActNotify})
 	for _, w := range []worker.Worker{wfw, aw} {
 		if err := w.Start(); err != nil {
@@ -326,38 +326,38 @@ func current(c client.Client, wfID string, e ship.Event, stderr io.Writer) bool 
 	return false
 }
 
-func runner(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("runner", flag.ContinueOnError)
+func auditor(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("auditor", flag.ContinueOnError)
 	home, _ := os.UserCacheDir()
-	workDir := fs.String("work-dir", filepath.Join(home, "tardis", "runner"), "where repository clones and the record of passed re-runs live")
+	workDir := fs.String("work-dir", filepath.Join(home, "tardis", "runner") /* v0.3 path: keeps its passes */, "where repository clones and the record of passed re-runs live")
 	rerun := fs.String("rerun-cmd", "", "shell command run per gate; exit 0 passes, 1 rejects (stand-in until provider re-runs). "+
 		"It runs in a clean checkout of the base, never the branch's code: read the change with git through $TARDIS_SHA and $TARDIS_BASE")
 	repos := map[string]bool{}
-	fs.Func("repo", "repository URL this runner serves, exactly as authors' remotes name it (repeatable, at least one). "+
-		"Run one runner per Temporal namespace: runners share one task queue, and each keeps the record of re-runs it passed in its own --work-dir", func(u string) error {
+	fs.Func("repo", "repository URL this auditor serves, exactly as workers' remotes name it (repeatable, at least one). "+
+		"Run one auditor per Temporal namespace: auditors share one task queue, and each keeps the record of re-runs it passed in its own --work-dir", func(u string) error {
 		repos[u] = true
 		return nil
 	})
-	if _, code, ok := parse(fs, "runner --repo <url>... [--work-dir <dir>] [--rerun-cmd <sh>]", args, 0, stderr); !ok {
+	if _, code, ok := parse(fs, "auditor --repo <url>... [--work-dir <dir>] [--rerun-cmd <sh>]", args, 0, stderr); !ok {
 		return code
 	}
 	if len(repos) == 0 {
-		fmt.Fprintln(stderr, "runner: --repo is required: name each repository URL this runner serves")
+		fmt.Fprintln(stderr, "auditor: --repo is required: name each repository URL this auditor serves")
 		return 2
 	}
-	fmt.Fprintln(stderr, "tardis runner: a stand-in until builds 4 and 5. Re-runs are --rerun-cmd; check runs and PRs are only logged, never posted or opened.")
-	r := &ship.Runner{Repos: repos, WorkDir: *workDir, Exec: executor.Local{}, Log: stdout}
+	fmt.Fprintln(stderr, "tardis auditor: a stand-in until builds 4 and 5. Re-runs are --rerun-cmd; check runs and PRs are only logged, never posted or opened.")
+	r := &ship.Auditor{Repos: repos, WorkDir: *workDir, Exec: executor.Local{}, Log: stdout}
 	if *rerun != "" {
 		r.RerunCmd = []string{"sh", "-c", *rerun}
 	}
 	c, err := ship.Dial()
 	if err != nil {
-		fmt.Fprintln(stderr, "runner: temporal:", err)
+		fmt.Fprintln(stderr, "auditor: temporal:", err)
 		return 2
 	}
 	defer c.Close()
 
-	rw := worker.New(c, ship.RunnerQueue, worker.Options{})
+	rw := worker.New(c, ship.AuditorQueue, worker.Options{})
 	for name, fn := range map[string]any{
 		ship.ActResolve: r.Resolve, ship.ActAttest: r.Attest, ship.ActRerun: r.Rerun,
 		ship.ActPostCheck: r.PostCheck, ship.ActOpenPR: r.OpenPR,
@@ -372,7 +372,7 @@ func runner(args []string, stdout, stderr io.Writer) int {
 		}
 		defer w.Stop()
 	}
-	fmt.Fprintf(stdout, "runner polling %s and %s\n", ship.WorkflowQueue, ship.RunnerQueue)
+	fmt.Fprintf(stdout, "auditor polling %s and %s\n", ship.WorkflowQueue, ship.AuditorQueue)
 	<-worker.InterruptCh()
 	return 0
 }

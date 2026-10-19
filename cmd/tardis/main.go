@@ -23,7 +23,7 @@ const usage = `usage:
   tardis manifest resolve <base> <head> [--repo <dir>]
   tardis request [<sha>] --tool <vendor/tool/model> [--repo <dir>] [--remote <name>]
   tardis wait --tool <vendor/tool/model> [--repo <dir>] [--remote <name>]
-  tardis runner --repo <url>... [--work-dir <dir>] [--rerun-cmd <sh>]
+  tardis auditor --repo <url>... [--work-dir <dir>] [--rerun-cmd <sh>]
   tardis version
 `
 
@@ -45,8 +45,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return request(args[1:], stdout, stderr)
 	case len(args) > 0 && args[0] == "wait":
 		return wait(args[1:], stdout, stderr)
-	case len(args) > 0 && args[0] == "runner":
-		return runner(args[1:], stdout, stderr)
+	case len(args) > 0 && (args[0] == "auditor" || args[0] == "runner"): // runner: the pre-v0.4 name; drop after one release
+		return auditor(args[1:], stdout, stderr)
 	case len(args) >= 1 && args[0] == "review":
 		// The reference gates run `tardis review <gate>`; the review itself
 		// arrives with the provider (build 4).

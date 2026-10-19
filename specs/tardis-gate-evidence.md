@@ -1,5 +1,5 @@
 # tardis-gate: check-commit evidence & chain   appetite: 2 Codex windows / 1 Claude review
-Build 1/5. Needs: nothing. Feeds: tardis-gate-manifest, -workflow, -runner, -pr.
+Build 1/5. Needs: nothing. Feeds: tardis-gate-manifest, -workflow, -auditor, -pr.
 
 ## Problem
 Nothing on a branch records that review X ran against code Y; a reviewer's word lives in
@@ -15,7 +15,7 @@ can order and judge valid / missing / broken with one command and no network.
   a check breaks every check before it. Per gate: valid | missing | broken(<reason>).
 - `tardis check commit <gate> --summary-file f --tool <vendor/tool/model>` writes it.
 - `tardis chain verify <base> <head> --gates a,b,c` → JSON `{gate: status}`, exit 0 iff
-  all valid. `chain.Verify()` is what -runner's Attest calls.
+  all valid. `chain.Verify()` is what -auditor's Attest calls.
 - Touches: `internal/chain`, `cmd/tardis`. Does not touch: Temporal, GitHub, providers.
 
 ## Acceptance checks
@@ -32,7 +32,7 @@ can order and judge valid / missing / broken with one command and no network.
 - `time tardis chain verify` on a 200-commit fixture → < 1 s
 
 ## No-gos
-- No signing or GPG; a check commit is a claim; proof is the App's check run (-runner).
+- No signing or GPG; a check commit is a claim; proof is the App's check run (-auditor).
 - Never rewrites history; broken checks stay in place and are ignored.
 - No body schema beyond the 40-line cap and the three trailers; no JSON in the body.
 - Does not read `gate.yml`; the gate list is an argument (-manifest resolves it).
@@ -44,7 +44,7 @@ can order and judge valid / missing / broken with one command and no network.
   and would be a second code path (spike)
 - `Ship-Check` = gate name — machine-stable; subject stays human (expert-general, 0.7)
 - `Ship-Check-Tool` = `<vendor>/<tool>/<model>`; vendor ∈ {anthropic, openai, google,
-  local, other} — the only field -runner reads; prefix check (expert-general, 0.8)
+  local, other} — the only field -auditor reads; prefix check (expert-general, 0.8)
 - Three trailers and the 40-line cap hardcoded, no `evidence` schema — every gate needs
   the same three; a fourth earns the field (expert-general, 0.7)
 - CLI = stdlib `flag`, one FlagSet per subcommand — ~10 commands; cobra buys nothing

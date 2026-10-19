@@ -1,7 +1,7 @@
 name: release
 
 # Tag vX.Y.Z on main to publish binaries with checksums and a build-provenance
-# attestation. Install on a runner host only after `gh attestation verify`.
+# attestation. Install on an auditor host only after `gh attestation verify`.
 
 on:
   push:

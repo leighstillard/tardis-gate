@@ -1,5 +1,5 @@
 # tardis-gate: gate manifest & enrolment       appetite: 2 Codex windows / 1 Claude review
-Build 2/5. Needs: tardis-gate-evidence. Feeds: -workflow, -runner, -pr.
+Build 2/5. Needs: tardis-gate-evidence. Feeds: -workflow, -auditor, -pr.
 
 ## Problem
 A user can't add a review, or enable/override the reference set, without editing the
@@ -9,13 +9,13 @@ with a `gate.yml`, and one command resolves the ordered gate list a given diff m
 ## Solution sketch
 - `gate.yml` per gate dir: `name`, `applies_when` (path globs; empty = always), `run`
   (argv; env `TARDIS_BASE`, `TARDIS_HEAD`, `TARDIS_DIFF_FILE`, `TARDIS_RUNBOOK`,
-  `TARDIS_FINDINGS_OUT`), `timeout`, `retry`, `must_differ_from: author` (bool).
+  `TARDIS_FINDINGS_OUT`), `timeout`, `retry`, `must_differ_from: worker` (bool).
 - Framework ships `gates/{simplify,verify,design,review}`; `design.applies_when` is empty
   and the enrolment config supplies the user-visible globs; `review.must_differ_from`.
 - Enrolment config `.tardis/config.yml`: `base_branch`, `gates:` ordered list with
   `enabled`, `dir` (override), per-gate `applies_when`; `verify_runbook`; `provider`,
-  `author_vendors`, `auto_merge`, `merge_method`. Each key lands with the build that
-  reads it (`base_branch` -workflow, rest -runner / -pr); lint rejects it until then.
+  `worker_vendors`, `auto_merge`, `merge_method`. Each key lands with the build that
+  reads it (`base_branch` -workflow, rest -auditor / -pr); lint rejects it until then.
 - `tardis manifest lint` → schema/order errors; `tardis manifest resolve <base> <head>`
   → JSON `{base, head, gates}`: the ordered gates, bound to the commits they were
   resolved on; -evidence `--gates` takes it as is, refusing it once either has moved or

@@ -10,8 +10,8 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-// Timeouts. A dead runner shows within HeartbeatTimeout while an activity
-// runs, or ScheduleToStart when no runner is polling at all.
+// Timeouts. A dead auditor shows within HeartbeatTimeout while an activity
+// runs, or ScheduleToStart when no auditor is polling at all.
 const (
 	HeartbeatTimeout = 45 * time.Second
 	ScheduleToStart  = 2 * time.Minute
@@ -30,9 +30,9 @@ var retry = &temporal.RetryPolicy{
 	NonRetryableErrorTypes: []string{"Rejected", "Malformed"},
 }
 
-func runnerOpts(ctx workflow.Context, timeout time.Duration) workflow.Context {
+func auditorOpts(ctx workflow.Context, timeout time.Duration) workflow.Context {
 	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		TaskQueue:              RunnerQueue,
+		TaskQueue:              AuditorQueue,
 		ScheduleToStartTimeout: ScheduleToStart,
 		StartToCloseTimeout:    min(timeout, MaxGateTime),
 		ScheduleToCloseTimeout: ScheduleToClose,
@@ -41,11 +41,11 @@ func runnerOpts(ctx workflow.Context, timeout time.Duration) workflow.Context {
 	})
 }
 
-func authorOpts(ctx workflow.Context, queue string, timeout time.Duration) workflow.Context {
+func workerOpts(ctx workflow.Context, queue string, timeout time.Duration) workflow.Context {
 	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		TaskQueue:              queue,
 		StartToCloseTimeout:    min(timeout, MaxGateTime),
-		ScheduleToCloseTimeout: AwaitDelivery, // the author may attach later
+		ScheduleToCloseTimeout: AwaitDelivery, // the worker may attach later
 		HeartbeatTimeout:       HeartbeatTimeout,
 		RetryPolicy:            retry,
 		// A cancelled review still holds the working copy until it stops;
@@ -103,7 +103,7 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 	}
 	heads := workflow.GetSignalChannel(ctx, SignalNewHead)
 	info := workflow.GetInfo(ctx)
-	authorQ := AuthorQueue(info.WorkflowExecution.ID)
+	workerQ := WorkerQueue(info.WorkflowExecution.ID)
 
 	for passes := 0; ; passes++ {
 		head = latest(heads, head)
@@ -116,12 +116,12 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 		}
 		pass = fmt.Sprintf("%s/%d", info.WorkflowExecution.RunID, passes)
 		pctx := workflow.WithValue(ctx, passKey{}, pass)
-		notify(pctx, authorQ, Event{Kind: "started", SHA: head})
+		notify(pctx, workerQ, Event{Kind: "started", SHA: head})
 
 		passCtx, cancel := workflow.WithCancel(pctx)
 		done := workflow.NewBufferedChannel(ctx, 1)
 		workflow.Go(passCtx, func(gctx workflow.Context) {
-			done.Send(gctx, runGates(gctx, in, head, authorQ))
+			done.Send(gctx, runGates(gctx, in, head, workerQ))
 		})
 		var res outcome
 		var sig NewHead
@@ -145,17 +145,17 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 				continue
 			}
 			var url string
-			err := workflow.ExecuteActivity(runnerOpts(ctx, 5*time.Minute), ActOpenPR,
+			err := workflow.ExecuteActivity(auditorOpts(ctx, 5*time.Minute), ActOpenPR,
 				OpenPRIn{RepoURL: in.RepoURL, Branch: in.Branch, Base: res.Base, BaseID: res.BaseID, Head: res.Tip}).Get(ctx, &url)
 			var ae *temporal.ApplicationError
 			moved := errors.As(err, &ae) && (ae.Type() == "BranchMoved" || ae.Type() == "BaseMoved")
 			if err != nil && !moved {
-				notify(pctx, authorQ, Event{Kind: "failed", Gate: "open-pr", SHA: res.Tip, Detail: reason(err, "runner")})
+				notify(pctx, workerQ, Event{Kind: "failed", Gate: "open-pr", SHA: res.Tip, Detail: reason(err, "auditor")})
 				return "", err
 			}
 			if !moved {
-				notify(pctx, authorQ, Event{Kind: "pr-created", SHA: res.Tip, Detail: url})
-				notify(pctx, authorQ, Event{Kind: "completed", SHA: res.Tip})
+				notify(pctx, workerQ, Event{Kind: "pr-created", SHA: res.Tip, Detail: url})
+				notify(pctx, workerQ, Event{Kind: "completed", SHA: res.Tip})
 				// Last look, with nothing blocking before the return: Temporal
 				// does not let a run complete past a signal that arrived
 				// meanwhile, so a head requested up to here starts it again.
@@ -172,10 +172,10 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 			if ae.Type() == "BaseMoved" {
 				detail = "the base moved since the gates ran; rebase onto it and run tardis request again"
 			}
-			notify(pctx, authorQ, Event{Kind: "failed", Gate: "open-pr", SHA: res.Tip, Detail: detail})
+			notify(pctx, workerQ, Event{Kind: "failed", Gate: "open-pr", SHA: res.Tip, Detail: detail})
 		}
 
-		// Rejected or failed: wait for the author to push a fix and ask again.
+		// Rejected or failed: wait for the worker to push a fix and ask again.
 		timedOut := false
 		timerCtx, stopTimer := workflow.WithCancel(ctx)
 		wait := workflow.NewSelector(ctx)
@@ -191,17 +191,17 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 }
 
 // runGates makes one pass over the gates for head. It never returns an error:
-// every way a pass can stop is an outcome the author is told about.
-func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
+// every way a pass can stop is an outcome the worker is told about.
+func runGates(ctx workflow.Context, in Input, head, workerQ string) outcome {
 	stop := func(gate, kind, why, tip string) outcome {
 		if ctx.Err() != nil {
 			return outcome{Canceled: true}
 		}
-		// Both at once: a dead runner must not hold up the author's news, nor
-		// an absent author the failure check.
-		// Kept for as long as the run waits for a fix, so an author who
+		// Both at once: a dead auditor must not hold up the worker's news, nor
+		// an absent worker the failure check.
+		// Kept for as long as the run waits for a fix, so a worker who
 		// detached during the pass still hears why it stopped.
-		n := workflow.ExecuteActivity(workflow.WithScheduleToCloseTimeout(deliveryOpts(ctx, authorQ), AwaitFix), ActNotify, Event{Kind: kind, Gate: gate, SHA: tip, Detail: why, Pass: passOf(ctx)})
+		n := workflow.ExecuteActivity(workflow.WithScheduleToCloseTimeout(deliveryOpts(ctx, workerQ), AwaitFix), ActNotify, Event{Kind: kind, Gate: gate, SHA: tip, Detail: why, Pass: passOf(ctx)})
 		c := postCheck(ctx, in, "", "", tip, gate, "failure", why)
 		_ = n.Get(ctx, nil)
 		_ = c.Get(ctx, nil) // best effort: a failure only blocks
@@ -209,9 +209,9 @@ func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
 	}
 
 	var res ResolveOut
-	if err := workflow.ExecuteActivity(runnerOpts(ctx, 5*time.Minute), ActResolve,
+	if err := workflow.ExecuteActivity(auditorOpts(ctx, 5*time.Minute), ActResolve,
 		ResolveIn{RepoURL: in.RepoURL, SHA: head}).Get(ctx, &res); err != nil {
-		return stop("resolve", "failed", reason(err, "runner"), head)
+		return stop("resolve", "failed", reason(err, "auditor"), head)
 	}
 	if in.Branch == res.Base {
 		return stop("resolve", "failed", in.Branch+" is the base branch; ship from a feature branch", head)
@@ -222,34 +222,34 @@ func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
 	var names []string
 	for _, g := range gates {
 		names = append(names, g.Name)
-		if err := workflow.ExecuteActivity(gateRetries(authorOpts(ctx, authorQ, g.Timeout), g.Retry), ActAuthorReview,
-			AuthorReviewIn{Gate: g.Name, Base: res.Base, BaseID: res.BaseID, Code: head, Tip: tip}).Get(ctx, &tip); err != nil {
-			return stop(g.Name, "failed", "author review: "+reason(err, "author"), tip)
+		if err := workflow.ExecuteActivity(gateRetries(workerOpts(ctx, workerQ, g.Timeout), g.Retry), ActWorkerReview,
+			WorkerReviewIn{Gate: g.Name, Base: res.Base, BaseID: res.BaseID, Code: head, Tip: tip}).Get(ctx, &tip); err != nil {
+			return stop(g.Name, "failed", "worker review: "+reason(err, "worker"), tip)
 		}
 		var st map[string]string
-		if err := workflow.ExecuteActivity(runnerOpts(ctx, 5*time.Minute), ActAttest,
+		if err := workflow.ExecuteActivity(auditorOpts(ctx, 5*time.Minute), ActAttest,
 			AttestIn{RepoURL: in.RepoURL, BaseID: res.BaseID, Tip: tip, Gates: []string{g.Name}}).Get(ctx, &st); err != nil {
-			return stop(g.Name, "failed", reason(err, "runner"), tip)
+			return stop(g.Name, "failed", reason(err, "auditor"), tip)
 		}
 		if st[g.Name] != "valid" {
 			return stop(g.Name, "rejected", "check commit "+st[g.Name], tip)
 		}
 		var v Verdict
-		if err := workflow.ExecuteActivity(gateRetries(runnerOpts(ctx, g.Timeout), g.Retry), ActRerun,
+		if err := workflow.ExecuteActivity(gateRetries(auditorOpts(ctx, g.Timeout), g.Retry), ActRerun,
 			RerunIn{RepoURL: in.RepoURL, Base: res.Base, BaseID: res.BaseID, Tip: tip, Gate: g.Name}).Get(ctx, &v); err != nil {
-			return stop(g.Name, "failed", reason(err, "runner"), tip)
+			return stop(g.Name, "failed", reason(err, "auditor"), tip)
 		}
 		if !v.Pass {
 			return stop(g.Name, "rejected", v.Reason, tip)
 		}
-		notify(ctx, authorQ, Event{Kind: "passed", Gate: g.Name, SHA: tip})
+		notify(ctx, workerQ, Event{Kind: "passed", Gate: g.Name, SHA: tip})
 	}
 
 	// Every check must still hold on the final tip before a PR is opened.
 	var st map[string]string
-	if err := workflow.ExecuteActivity(runnerOpts(ctx, 5*time.Minute), ActAttest,
+	if err := workflow.ExecuteActivity(auditorOpts(ctx, 5*time.Minute), ActAttest,
 		AttestIn{RepoURL: in.RepoURL, BaseID: res.BaseID, Tip: tip, Gates: names}).Get(ctx, &st); err != nil {
-		return stop("chain", "failed", reason(err, "runner"), tip)
+		return stop("chain", "failed", reason(err, "auditor"), tip)
 	}
 	for _, n := range names {
 		if st[n] != "valid" {
@@ -261,14 +261,14 @@ func runGates(ctx workflow.Context, in Input, head, authorQ string) outcome {
 	for _, n := range names {
 		// No PR without its checks: a refused or failed success stops the pass.
 		if err := postCheck(ctx, in, res.Base, res.BaseID, tip, n, "success", "").Get(ctx, nil); err != nil {
-			return stop(n, "failed", "posting the success check: "+reason(err, "runner"), tip)
+			return stop(n, "failed", "posting the success check: "+reason(err, "auditor"), tip)
 		}
 	}
 	return outcome{Tip: tip, Base: res.Base, BaseID: res.BaseID}
 }
 
-// reason turns an activity error from side ("runner" or "author") into words
-// for the author. A timeout means that side is gone, unless the work simply
+// reason turns an activity error from side ("auditor" or "worker") into words
+// for the worker. A timeout means that side is gone, unless the work simply
 // ran past its own time limit.
 func reason(err error, side string) string {
 	var te *temporal.TimeoutError
@@ -293,17 +293,17 @@ func passOf(ctx workflow.Context) string {
 	return p
 }
 
-// notify tells the author; delivery problems never stop the run.
-func notify(ctx workflow.Context, authorQ string, e Event) {
+// notify tells the worker; delivery problems never stop the run.
+func notify(ctx workflow.Context, workerQ string, e Event) {
 	e.Pass = passOf(ctx)
-	_ = workflow.ExecuteActivity(deliveryOpts(ctx, authorQ), ActNotify, e).Get(ctx, nil)
+	_ = workflow.ExecuteActivity(deliveryOpts(ctx, workerQ), ActNotify, e).Get(ctx, nil)
 }
 
-// postCheck asks the runner to post a tardis/<gate> check run, waiting for a
-// runner if none is up. The runner posts a success only for a gate it re-ran
+// postCheck asks the auditor to post a tardis/<gate> check run, waiting for a
+// auditor if none is up. The auditor posts a success only for a gate it re-ran
 // and passed itself; the workflow cannot vouch for one.
 func postCheck(ctx workflow.Context, in Input, base, baseID, sha, gate, conclusion, summary string) workflow.Future {
-	return workflow.ExecuteActivity(deliveryOpts(ctx, RunnerQueue), ActPostCheck,
+	return workflow.ExecuteActivity(deliveryOpts(ctx, AuditorQueue), ActPostCheck,
 		CheckIn{RepoURL: in.RepoURL, Base: base, BaseID: baseID, SHA: sha, Gate: gate, Conclusion: conclusion, Summary: summary})
 }
 
