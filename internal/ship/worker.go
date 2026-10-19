@@ -208,7 +208,7 @@ func (a *Worker) review(ctx context.Context, in WorkerReviewIn, base string) err
 		Env: append(env,
 			"TARDIS_GATE="+in.Gate, "TARDIS_BASE="+base, "TARDIS_HEAD="+in.Code,
 			"TARDIS_DIFF_FILE="+diffFile, "TARDIS_RUNBOOK="+m.VerifyRunbook,
-			"TARDIS_FINDINGS_OUT="+findings),
+			"TARDIS_FINDINGS_OUT="+findings, "TARDIS_TOOL="+a.Tool, "TARDIS_AUDITOR_GATES="+in.GatesDigest),
 		Clean: true,
 	}, func(string) {})
 	if err != nil {

@@ -3,9 +3,10 @@ package ship
 import (
 	"errors"
 	"fmt"
-	enumspb "go.temporal.io/api/enums/v1"
+	"strings"
 	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
@@ -223,7 +224,7 @@ func runGates(ctx workflow.Context, in Input, head, workerQ string) outcome {
 	for _, g := range gates {
 		names = append(names, g.Name)
 		if err := workflow.ExecuteActivity(gateRetries(workerOpts(ctx, workerQ, g.Timeout), g.Retry), ActWorkerReview,
-			WorkerReviewIn{Gate: g.Name, Base: res.Base, BaseID: res.BaseID, Code: head, Tip: tip}).Get(ctx, &tip); err != nil {
+			WorkerReviewIn{Gate: g.Name, Base: res.Base, BaseID: res.BaseID, Code: head, Tip: tip, GatesDigest: res.GatesDigest}).Get(ctx, &tip); err != nil {
 			return stop(g.Name, "failed", "worker review: "+reason(err, "worker"), tip)
 		}
 		var st map[string]string
@@ -232,7 +233,7 @@ func runGates(ctx workflow.Context, in Input, head, workerQ string) outcome {
 			return stop(g.Name, "failed", reason(err, "auditor"), tip)
 		}
 		if st[g.Name] != "valid" {
-			return stop(g.Name, "rejected", "check commit "+st[g.Name], tip)
+			return stop(g.Name, "rejected", claimReason(st[g.Name]), tip)
 		}
 		var v Verdict
 		if err := workflow.ExecuteActivity(gateRetries(auditorOpts(ctx, g.Timeout), g.Retry), ActRerun,
@@ -253,7 +254,7 @@ func runGates(ctx workflow.Context, in Input, head, workerQ string) outcome {
 	}
 	for _, n := range names {
 		if st[n] != "valid" {
-			return stop(n, "rejected", "check commit "+st[n]+" on the final tip", tip)
+			return stop(n, "rejected", claimReason(st[n])+" on the final tip", tip)
 		}
 	}
 	// Every gate's success goes on the final tip, the commit the PR is opened
@@ -283,6 +284,15 @@ func reason(err error, side string) string {
 		return ae.Error()
 	}
 	return err.Error()
+}
+
+// claimReason words a chain status that is not valid for the worker and the
+// check run: "missing check" or "broken check: <reason>".
+func claimReason(status string) string {
+	if r, ok := strings.CutPrefix(status, "broken("); ok {
+		return "broken check: " + strings.TrimSuffix(r, ")")
+	}
+	return status + " check"
 }
 
 // passKey holds the current pass's ID in a workflow context.

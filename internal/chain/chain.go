@@ -375,3 +375,18 @@ func gitRaw(dir string, args ...string) (string, error) {
 	}
 	return stdout.String(), nil
 }
+
+// Claim returns a check commit's summary and Ship-Check-Tool, as Verify reads
+// them. Call it only on a check Verify judged valid.
+func Claim(dir, sha string) (summary, tool string, err error) {
+	_, rest, err := message(dir, sha)
+	if err != nil {
+		return "", "", err
+	}
+	summary, block := splitTrailers(rest)
+	t, reason := parseTrailers(block)
+	if reason != "" {
+		return "", "", fmt.Errorf("check %.12s: %s", sha, reason)
+	}
+	return summary, t[TrailerTool], nil
+}

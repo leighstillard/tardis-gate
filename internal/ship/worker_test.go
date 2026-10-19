@@ -15,7 +15,7 @@ import (
 
 // workerRepo is a clone of a bare origin with main, enrolled with one gate
 // (simplify), pushed and feature checked out one code commit ahead.
-func workerRepo(t *testing.T) (*Worker, func(...string) string) {
+func workerRepo(t *testing.T, config ...string) (*Worker, func(...string) string) {
 	t.Helper()
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -40,7 +40,7 @@ func workerRepo(t *testing.T) (*Worker, func(...string) string) {
 	if err := os.MkdirAll(filepath.Join(dir, ".tardis"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".tardis", "config.yml"), []byte("gates:\n  - name: simplify\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".tardis", "config.yml"), []byte("gates:\n  - name: simplify\n"+strings.Join(config, "")), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	git("add", "-A")

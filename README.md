@@ -226,6 +226,54 @@ gh release download v0.1.0 -R leighstillard/tardis-gate -p 'tardis_linux_amd64'
 gh attestation verify tardis_linux_amd64 -R leighstillard/tardis-gate
 ```
 
+## Choosing the reviewer
+
+The auditor's re-run and `tardis review` both use the model named in the base branch's
+`.tardis/config.yml`:
+
+```yaml
+provider:
+  type: openaicompat          # openaicompat (default), anthropic or exec
+  base_url: https://openrouter.ai/api/v1
+  model: qwen/qwen3-coder:free
+worker_vendors: [anthropic]   # whose claims a must_differ_from gate accepts
+```
+
+With no `provider` section the reviewer is a free OpenRouter model from a vendor other
+than the worker's. That list of free models goes stale, so pin `model` for anything that
+matters. A gate with `must_differ_from: worker` is refused, before any model call, if the
+claim's vendor is not in `worker_vendors` or is the reviewer's own vendor.
+
+API keys never come from the config. They come from the environment, and each key goes
+only to its own host, over https: `OPENROUTER_API_KEY` to openrouter.ai, `OPENAI_API_KEY`
+to api.openai.com, `ANTHROPIC_API_KEY` to api.anthropic.com. Any other `base_url`, such
+as a local model, gets no key.
+
+The reference gates run `tardis review <gate>` on the worker's machine. It is the same
+blind review the auditor makes, so a worker sees what the auditor will look for. It warns
+when its reference gates differ from the auditor's tardis version.
+
+## Running the auditor
+
+```bash
+tardis auditor --repo https://github.com/you/repo.git \
+  --app-id 123456 --app-key /etc/tardis/app.pem
+```
+
+The auditor posts a `tardis/<gate>` check run on each gate's head, as the GitHub App.
+Without `--app-id` and `--app-key` (or `TARDIS_APP_ID` and `TARDIS_APP_KEY`) the check
+runs are only logged. Each check names the tardis version, its reference gates' digest
+and, on a pass, the reviewer.
+
+A provider of `type: exec` runs a local command, which is code. The auditor refuses one
+unless it is given `--rerun-user <user>`. The command then runs as that user, with an
+empty `HOME` and none of the auditor's environment. Limit that user's network to the
+provider with a firewall rule, for example with nftables:
+
+```
+meta skuid tardis-rerun ip daddr != <provider address> drop
+```
+
 ## Secrets
 
 Nothing secret belongs in this repository. The auditor reads its keys from its own

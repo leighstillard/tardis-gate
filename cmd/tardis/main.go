@@ -23,7 +23,8 @@ const usage = `usage:
   tardis manifest resolve <base> <head> [--repo <dir>]
   tardis request [<sha>] --tool <vendor/tool/model> [--repo <dir>] [--remote <name>]
   tardis wait --tool <vendor/tool/model> [--repo <dir>] [--remote <name>]
-  tardis auditor --repo <url>... [--work-dir <dir>] [--rerun-cmd <sh>]
+  tardis review <gate>   (run by a gate under tardis request)
+  tardis auditor --repo <url>... [--work-dir <dir>] [--app-id <id> --app-key <pem>] [--rerun-user <user>]
   tardis version
 `
 
@@ -47,12 +48,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return wait(args[1:], stdout, stderr)
 	case len(args) > 0 && (args[0] == "auditor" || args[0] == "runner"): // runner: the pre-v0.4 name; drop after one release
 		return auditor(args[1:], stdout, stderr)
-	case len(args) >= 1 && args[0] == "review":
-		// The reference gates run `tardis review <gate>`; the review itself
-		// arrives with the provider (build 4).
-		fmt.Fprintln(stderr, "tardis review: not available until the provider lands (build 4). Until then, review in your own"+
-			" session and record it with `tardis check commit`, or set the gate's run in .tardis/gates/<gate>/gate.yml")
-		return 2
+	case len(args) > 0 && args[0] == "review":
+		return reviewCmd(args[1:], stdout, stderr)
 	case len(args) == 1 && args[0] == "version":
 		fmt.Fprintln(stdout, version())
 		return 0

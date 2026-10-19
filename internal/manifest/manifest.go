@@ -20,6 +20,7 @@ import (
 
 	"github.com/leighstillard/tardis-gate/gates"
 	"github.com/leighstillard/tardis-gate/internal/chain"
+	"github.com/leighstillard/tardis-gate/internal/provider"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -34,9 +35,11 @@ var ErrNotEnrolled = errors.New("not enrolled: " + ConfigPath + " not found")
 
 // Config is .tardis/config.yml.
 type Config struct {
-	BaseBranch    string    `yaml:"base_branch"` // default "main"
-	Gates         []GateRef `yaml:"gates"`
-	VerifyRunbook string    `yaml:"verify_runbook"`
+	BaseBranch    string          `yaml:"base_branch"` // default "main"
+	Gates         []GateRef       `yaml:"gates"`
+	VerifyRunbook string          `yaml:"verify_runbook"`
+	Provider      provider.Config `yaml:"provider"`       // the blind review's model; default a free OpenRouter one
+	WorkerVendors []string        `yaml:"worker_vendors"` // vendors whose claims a must_differ_from gate accepts
 }
 
 // GateRef enables, locates or narrows one gate.
@@ -56,6 +59,7 @@ type Gate struct {
 	Retry          int           `yaml:"retry"`
 	MustDifferFrom string        `yaml:"must_differ_from"` // "" or "worker"
 	Source         string        `yaml:"-"`                // file it was read from
+	Prompt         string        `yaml:"-"`                // prompt.md beside gate.yml: what the blind review looks for
 	match          []*regexp.Regexp
 }
 
@@ -64,6 +68,8 @@ type Manifest struct {
 	BaseBranch    string
 	VerifyRunbook string // repository-relative path; "" if unset
 	Gates         []Gate
+	Provider      provider.Config
+	WorkerVendors []string
 }
 
 // branchName is the subset of git's branch names a base may have; the rest
@@ -289,7 +295,7 @@ func load(read readFunc) (*Manifest, error) {
 	if len(cfg.Gates) > maxGates {
 		return nil, fmt.Errorf("gates: %d listed; at most %d", len(cfg.Gates), maxGates)
 	}
-	m := &Manifest{BaseBranch: cfg.BaseBranch}
+	m := &Manifest{BaseBranch: cfg.BaseBranch, Provider: cfg.Provider, WorkerVendors: cfg.WorkerVendors}
 	if m.BaseBranch == "" {
 		m.BaseBranch = "main"
 	}
@@ -299,6 +305,9 @@ func load(read readFunc) (*Manifest, error) {
 			return c == "" || strings.HasPrefix(c, ".") || strings.HasSuffix(c, ".lock")
 		}) {
 		errs = append(errs, fmt.Errorf("base_branch %q is not a branch name git accepts", m.BaseBranch))
+	}
+	if err := cfg.Provider.Check(); err != nil {
+		errs = append(errs, fmt.Errorf("provider: %w", err))
 	}
 	seen := map[string]bool{}
 	verifyEnabled := false
@@ -406,6 +415,19 @@ func loadGate(read readFunc, ref GateRef) (Gate, error) {
 		return Gate{}, fmt.Errorf("gate %q (%s): %w", ref.Name, src, err)
 	}
 	g.Source = src
+	// The prompt beside gate.yml, else the reference gate's of that name.
+	var prompt []byte
+	if strings.HasPrefix(src, "reference:") {
+		prompt, err = fs.ReadFile(gates.FS, ref.Name+"/prompt.md")
+	} else if prompt, err = read(path.Join(path.Dir(src), "prompt.md")); errors.Is(err, fs.ErrNotExist) {
+		if prompt, err = fs.ReadFile(gates.FS, ref.Name+"/prompt.md"); err != nil {
+			prompt, err = []byte("Review this change for the "+ref.Name+" gate."), nil
+		}
+	}
+	if err != nil {
+		return Gate{}, fmt.Errorf("gate %q: prompt.md: %w", ref.Name, err)
+	}
+	g.Prompt = string(prompt)
 	if ref.AppliesWhen != nil {
 		g.AppliesWhen = ref.AppliesWhen
 	}
