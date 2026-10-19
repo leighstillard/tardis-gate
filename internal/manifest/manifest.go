@@ -54,7 +54,7 @@ type Gate struct {
 	Run            []string      `yaml:"run"`          // argv
 	Timeout        time.Duration `yaml:"timeout"`
 	Retry          int           `yaml:"retry"`
-	MustDifferFrom string        `yaml:"must_differ_from"` // "" or "author"
+	MustDifferFrom string        `yaml:"must_differ_from"` // "" or "worker"
 	Source         string        `yaml:"-"`                // file it was read from
 	match          []*regexp.Regexp
 }
@@ -427,8 +427,11 @@ func loadGate(read readFunc, ref GateRef) (Gate, error) {
 	} else if g.Retry > 10 { // more cannot finish within the hour's backoff, and a huge one would wrap to "no limit"
 		errs = append(errs, errors.New("retry must be at most 10"))
 	}
-	if g.MustDifferFrom != "" && g.MustDifferFrom != "author" {
-		errs = append(errs, fmt.Errorf("must_differ_from is %q; only \"author\" is supported", g.MustDifferFrom))
+	if g.MustDifferFrom == "author" { // ponytail: the pre-v0.4 name; drop after one release
+		g.MustDifferFrom = "worker"
+	}
+	if g.MustDifferFrom != "" && g.MustDifferFrom != "worker" {
+		errs = append(errs, fmt.Errorf("must_differ_from is %q; only \"worker\" is supported", g.MustDifferFrom))
 	}
 	if len(g.AppliesWhen) > maxGlobs { // before compiling any
 		errs = append(errs, fmt.Errorf("applies_when: %d patterns; at most %d", len(g.AppliesWhen), maxGlobs))

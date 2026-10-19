@@ -19,9 +19,9 @@ import (
 	"github.com/leighstillard/tardis-gate/internal/manifest"
 )
 
-// Author serves the activities that run on the author's machine for one run.
-type Author struct {
-	Dir    string // the author's working copy, on the branch being shipped
+// Worker serves the activities that run on the worker's machine for one run.
+type Worker struct {
+	Dir    string // the worker's working copy, on the branch being shipped
 	Remote string
 	Branch string
 	Tool   string // Ship-Check-Tool for check commits this machine writes
@@ -30,12 +30,12 @@ type Author struct {
 	Events chan<- Event // terminal events are sent here as well as printed
 }
 
-// AuthorReview makes sure gate has a check commit on the branch and pushes it.
-// A valid check already on top (written by the author's own session) is used
+// WorkerReview makes sure gate has a check commit on the branch and pushes it.
+// A valid check already on top (written by the worker's own session) is used
 // as is; otherwise the gate's run command is executed and its findings become
 // the check commit's summary. It returns the new branch tip.
-func (a *Author) AuthorReview(ctx context.Context, in AuthorReviewIn) (string, error) {
-	defer heartbeat(ctx)() // from the start: a slow fetch or diff must not look like a dead author
+func (a *Worker) WorkerReview(ctx context.Context, in WorkerReviewIn) (string, error) {
+	defer heartbeat(ctx)() // from the start: a slow fetch or diff must not look like a dead worker
 	if err := a.onBranch(ctx); err != nil {
 		return "", err
 	}
@@ -55,7 +55,7 @@ func (a *Author) AuthorReview(ctx context.Context, in AuthorReviewIn) (string, e
 				"Malformed", nil)
 		}
 	}
-	// The base commit the runner pinned for this pass. The gate's command is
+	// The base commit the auditor pinned for this pass. The gate's command is
 	// read from it and run here, so check it ourselves first.
 	base := in.BaseID
 	if err := a.checkBase(ctx, in.Base, base); err != nil {
@@ -104,7 +104,7 @@ func readAtMost(path string, max int64) ([]byte, error) {
 
 // onBranch makes sure the working copy is still on the run's branch: a check
 // commit goes on whichever branch is checked out, and is pushed to this one.
-func (a *Author) onBranch(ctx context.Context) error {
+func (a *Worker) onBranch(ctx context.Context) error {
 	if ref, err := gitOut(ctx, a.Dir, "symbolic-ref", "-q", "HEAD"); err != nil || ref != "refs/heads/"+a.Branch {
 		return temporal.NewNonRetryableApplicationError(
 			fmt.Sprintf("the working copy is no longer on %s; check it out and run tardis request again", a.Branch), "Malformed", nil)
@@ -127,7 +127,7 @@ func onFirstParent(ctx context.Context, dir, ref, id string) (bool, error) {
 // as base_branch, and baseID a commit it has held. The workflow names both,
 // and anyone who can start one could otherwise point this machine at gate
 // commands from any commit.
-func (a *Author) checkBase(ctx context.Context, base, baseID string) error {
+func (a *Worker) checkBase(ctx context.Context, base, baseID string) error {
 	malformed := func(msg string) error { return temporal.NewNonRetryableApplicationError(msg, "Malformed", nil) }
 	out, err := gitOut(ctx, a.Dir, "ls-remote", "--symref", a.Remote, "HEAD")
 	if err != nil {
@@ -159,7 +159,7 @@ func (a *Author) checkBase(ctx context.Context, base, baseID string) error {
 	return nil
 }
 
-func (a *Author) review(ctx context.Context, in AuthorReviewIn, base string) error {
+func (a *Worker) review(ctx context.Context, in WorkerReviewIn, base string) error {
 	// The gate's command comes from base, like the gate list, so the branch
 	// under review cannot change what runs here.
 	m, err := manifest.LoadRev(a.Dir, base)
@@ -222,7 +222,7 @@ func (a *Author) review(ctx context.Context, in AuthorReviewIn, base string) err
 			fmt.Fprintf(a.Out, "%s: %s exited %d:\n%s\n", in.Gate, cmd, res.ExitCode, tail(res.Output))
 		}
 		return temporal.NewNonRetryableApplicationError(
-			fmt.Sprintf("%s exited %d; its output is on the author's machine", cmd, res.ExitCode), "Rejected", nil)
+			fmt.Sprintf("%s exited %d; its output is on the worker's machine", cmd, res.ExitCode), "Rejected", nil)
 	}
 	summary, err := readAtMost(findings, 64<<10) // the gate decides its size
 	if errors.Is(err, errTooBig) {
@@ -266,7 +266,7 @@ func (a *Author) review(ctx context.Context, in AuthorReviewIn, base string) err
 
 // clean refuses a working tree with uncommitted or untracked changes: the
 // review runs in the working copy and must see exactly the pushed commit.
-func (a *Author) clean(ctx context.Context) error {
+func (a *Worker) clean(ctx context.Context) error {
 	if out, err := gitOut(ctx, a.Dir, "status", "--porcelain", "--untracked-files=all"); err != nil {
 		return err
 	} else if out != "" {
@@ -277,8 +277,8 @@ func (a *Author) clean(ctx context.Context) error {
 	return nil
 }
 
-// Notify prints one event for the author.
-func (a *Author) Notify(ctx context.Context, e Event) error {
+// Notify prints one event for the worker.
+func (a *Worker) Notify(ctx context.Context, e Event) error {
 	fmt.Fprintln(a.Out, e)
 	if e.Terminal() && a.Events != nil {
 		// Wait rather than drop: a redelivered old notice must not crowd

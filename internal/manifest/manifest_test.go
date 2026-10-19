@@ -90,7 +90,7 @@ func TestLoadSample(t *testing.T) {
 			t.Errorf("%s: timeout %v run %v", g.Name, g.Timeout, g.Run)
 		}
 	}
-	if m.Gates[3].MustDifferFrom != "author" {
+	if m.Gates[3].MustDifferFrom != "worker" {
 		t.Errorf("review must_differ_from = %q", m.Gates[3].MustDifferFrom)
 	}
 	if !strings.HasSuffix(m.VerifyRunbook, "docs/RUNBOOK.md") {
@@ -693,5 +693,17 @@ func TestResolveOnRealDiff(t *testing.T) {
 	}
 	if got, want := resolve("frontend", "web/app.js"), []string{"simplify", "verify", "design", "review"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("web/ change: %v, want %v", got, want)
+	}
+}
+
+func TestMustDifferFromAcceptsTheOldName(t *testing.T) {
+	root := copySample(t, map[string]string{ConfigPath: "gates:\n  - name: lint\n",
+		".tardis/gates/lint/gate.yml": "name: lint\nrun: [make]\ntimeout: 1m\nmust_differ_from: author\n"})
+	m, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Gates[0].MustDifferFrom; got != "worker" {
+		t.Errorf("must_differ_from = %q, want worker", got)
 	}
 }

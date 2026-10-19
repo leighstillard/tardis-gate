@@ -1,7 +1,7 @@
 # tardis-gate
 
 tardis-gate sits between a finished code change and its pull request. It takes the diff
-through an ordered list of reviews, and it only opens the PR once an independent runner is
+through an ordered list of reviews, and it only opens the PR once an independent auditor is
 satisfied that every review happened and that each one held up.
 
 It is a framework rather than a fixed policy. It ships four reference reviews, and each
@@ -9,7 +9,7 @@ repository that enrols chooses which to run and can add its own. It runs on Temp
 or on a local `temporal server start-dev`.
 
 **Status:** builds 1 to 3 of 5 are in: check-commit evidence (released as v0.1.0), the
-gate manifest and the ship workflow on Temporal. The runner's independent re-run and the
+gate manifest and the ship workflow on Temporal. The auditor's independent re-run and the
 PR gate are specified below and being built in public, followed by a traced tier
 (build 6) that ties each review to the worker's session telemetry.
 
@@ -26,14 +26,14 @@ same model that wrote the code, which tends to share the same blind spots. Branc
 doesn't help here. It can require CI to pass, but it has no idea whether a review happened.
 
 tardis-gate makes each review leave evidence in the repository. Something other than the
-author then checks that evidence before the change can become a PR.
+worker then checks that evidence before the change can become a PR.
 
 ## Terms
 
 - **Worker**: the agent session that writes the code and runs the reviews on the
-  developer's machine. The code still calls it the author.
+  developer's machine.
 - **Auditor**: the off-machine process, with its own GitHub App, that checks the worker's
-  claims and re-runs the reviews. The code still calls it the runner.
+  claims and re-runs the reviews.
 - **Operator**: the person who enrols a repository, holds the auditor's keys and applies
   the branch rules.
 - **Gate**: one named review step, defined by a `gate.yml`.
@@ -47,23 +47,23 @@ author then checks that evidence before the change can become a PR.
 
 ## How a run works
 
-1. The author, usually a Claude Code session, finishes a change and runs
+1. The worker, usually a Claude Code session, finishes a change and runs
    `tardis request <sha>`.
 2. A Temporal workflow takes the repository's list of reviews, for example simplify, then
    verify, then design, then an adversarial review.
-3. For each review in turn, the author runs it and records the result as an empty
+3. For each review in turn, the worker runs it and records the result as an empty
    *check commit* on the branch. The commit carries a short summary and three trailers
    naming the review, the code commit it reviewed, and the tool that ran it.
-4. The runner then handles that review. It runs off the author's machine under its own
+4. The auditor then handles that review. It runs off the worker's machine under its own
    GitHub App identity. It checks that the check commit exists, sits in the right place in
    history and is well formed. Then it re-runs the review itself, with fresh context and a
-   model from a different vendor, and compares its findings with the author's summary.
-5. If they agree, the runner posts a passing `tardis/<review>` check run on that commit.
+   model from a different vendor, and compares its findings with the worker's summary.
+5. If they agree, the auditor posts a passing `tardis/<review>` check run on that commit.
    If not, it posts a failing check with the reason. The workflow sends that reason back to
-   the author, who fixes the code, pushes, and the reviews start again from the top.
-6. When every review has passed on the head commit, the runner's App opens the PR. Later,
+   the worker, who fixes the code, pushes, and the reviews start again from the top.
+6. When every review has passed on the head commit, the auditor's App opens the PR. Later,
    once CI is green on the same commit, it can merge.
-7. The author's session is told about each step: rejections, the PR being opened, the CI
+7. The worker's session is told about each step: rejections, the PR being opened, the CI
    result and the merge.
 
 ## Design ideas
@@ -72,10 +72,10 @@ author then checks that evidence before the change can become a PR.
 
 A check commit is a claim, and it is forgeable by design. Anyone who can push to the branch
 can write one. Rather than fight that, tardis-gate keeps claims cheap and readable and
-moves trust somewhere else. Only a check run posted by the runner's GitHub App counts as
+moves trust somewhere else. Only a check run posted by the auditor's GitHub App counts as
 proof. The base branch's rules accept only that App's checks, and only that App can merge.
 
-This split lets the author's tools stay simple and fast while the part that matters is
+This split lets the worker's tools stay simple and fast while the part that matters is
 hard to fake.
 
 ### Evidence lives in git, next to the code
@@ -88,14 +88,14 @@ Keeping evidence in git means it travels with the branch, can be read offline wi
 `git log`, and doesn't depend on any one tool's database. A reviewer can see what was
 checked without trusting anything but the history.
 
-### The checker must not be the author
+### The checker must not be the worker
 
-The runner holds the only credentials that can post evidence or merge: the GitHub App key,
+The auditor holds the only credentials that can post evidence or merge: the GitHub App key,
 the model provider key and the Temporal key for its side. The developer's machine holds
 none of them. It can push code and nothing else.
 
 So an agent on the developer's machine cannot approve its own work, however it behaves.
-The worst it can do is write false claims, and the runner exists to catch those.
+The worst it can do is write false claims, and the auditor exists to catch those.
 
 ### The worker can't talk the auditor round
 
@@ -111,12 +111,12 @@ only the judge sees it. Telemetry is never put in front of a model at all.
 ### Independent re-runs, with a different vendor
 
 Running the same review twice with the same model mostly reproduces the same answer. The
-runner re-runs each review from scratch with fresh context. For the adversarial review it
-must use a model from a different vendor than the author.
+auditor re-runs each review from scratch with fresh context. For the adversarial review it
+must use a model from a different vendor than the worker.
 
-The re-run happens in two steps. First the runner reviews the diff blind, without seeing
-the author's summary, so it isn't anchored by it. Then a second call compares the two sets
-of findings and lists what the author missed and what the runner disputes. Any
+The re-run happens in two steps. First the auditor reviews the diff blind, without seeing
+the worker's summary, so it isn't anchored by it. Then a second call compares the two sets
+of findings and lists what the worker missed and what the auditor disputes. Any
 disagreement rejects the review. That is strict on purpose: a rerun is cheaper than a
 missed bug.
 
@@ -134,9 +134,9 @@ A run can span several commits, several rejections and many minutes of model tim
 script loses its place when a laptop sleeps. Temporal keeps the run's state on a server,
 so it survives crashes, restarts and network drops.
 
-Temporal also enforces liveness. Every long step sends a heartbeat. If the runner dies
-mid-review, the server notices within a minute and the step fails. The author is told,
-and a failing check is posted when the runner comes back. A review is never left showing
+Temporal also enforces liveness. Every long step sends a heartbeat. If the auditor dies
+mid-review, the server notices within a minute and the step fails. The worker is told,
+and a failing check is posted when the auditor comes back. A review is never left showing
 "running" forever.
 
 ### The PR is the last step, not the first
@@ -177,14 +177,14 @@ where faking a review costs about as much as doing one.
   machine can talk to the workflow without logging in. The GitHub check runs and branch
   rules still decide what merges, but the workflow's own state can be tampered with.
   Temporal Cloud ties every action to an API key.
-- **The author's tool is self-reported.** The runner learns which vendor wrote the code
+- **The worker's tool is self-reported.** The auditor learns which vendor wrote the code
   from the check commit. It checks that against a list the repository owner sets, but it
   cannot prove which model actually ran.
-- **One working copy per branch.** A run hands its author steps to whichever `tardis`
+- **One working copy per branch.** A run hands its worker steps to whichever `tardis`
   is attached to that branch. If two clones of the same branch attach at once, either may
-  get a step; the wrong one fails it and the author has to ask again.
-- **One runner per Temporal namespace.** A runner records the re-runs it passed in its
-  own work directory, and runners share one task queue. A second runner could pick up a
+  get a step; the wrong one fails it and the worker has to ask again.
+- **One auditor per Temporal namespace.** An auditor records the re-runs it passed in its
+  own work directory, and auditors share one task queue. A second auditor could pick up a
   run's later steps without the first one's record and refuse them.
 - **One tardis version per Temporal namespace.** Each attached `tardis` also runs
   workflow tasks for every run in the namespace. During an upgrade, an older binary can
@@ -203,10 +203,10 @@ Each spec is one page. Its acceptance checks are commands you can run.
 2. [Gate manifest and enrolment](specs/tardis-gate-manifest.md): `gate.yml`,
    `.tardis/config.yml`, and working out which reviews apply to a diff.
 3. [Ship workflow on Temporal](specs/tardis-gate-workflow.md): ordering, rejection and
-   rerun, heartbeats, and events back to the author.
-4. [Runner: attest and independent re-run](specs/tardis-gate-runner.md): the GitHub App,
+   rerun, heartbeats, and events back to the worker.
+4. [Auditor: attest and independent re-run](specs/tardis-gate-auditor.md): the GitHub App,
    model providers, and the comparison that decides pass or reject.
-5. [PR gate, ruleset and author events](specs/tardis-gate-pr.md): opening the PR, marking
+5. [PR gate, ruleset and worker events](specs/tardis-gate-pr.md): opening the PR, marking
    other PRs incomplete, the branch rules, and merging.
 6. [Traced tier](specs/tardis-gate-trace.md): binding each claim to the worker's
    telemetry, and the auditor's checks on it.
@@ -219,7 +219,7 @@ Use a tagged release, never a checkout. On a developer machine:
 go install github.com/leighstillard/tardis-gate/cmd/tardis@v0.1.0
 ```
 
-On a runner host, download the release binary and check its build provenance first:
+On an auditor host, download the release binary and check its build provenance first:
 
 ```bash
 gh release download v0.1.0 -R leighstillard/tardis-gate -p 'tardis_linux_amd64'
@@ -228,7 +228,7 @@ gh attestation verify tardis_linux_amd64 -R leighstillard/tardis-gate
 
 ## Secrets
 
-Nothing secret belongs in this repository. The runner reads its keys from its own
+Nothing secret belongs in this repository. The auditor reads its keys from its own
 environment on its own host. The developer's machine holds no credential that can post a
 check run or merge. The `.gitignore` blocks key files, env files and local databases.
 

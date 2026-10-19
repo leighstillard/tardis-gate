@@ -23,11 +23,11 @@ import (
 	"github.com/leighstillard/tardis-gate/internal/manifest"
 )
 
-// Runner serves the runner-side activities. This build attests check commits
+// Auditor serves the auditor-side activities. This build attests check commits
 // for real; the independent re-run is an operator-configured command, and
 // check runs and PRs are written to the log until the GitHub App lands.
-type Runner struct {
-	Repos    map[string]bool // the repository URLs this runner serves; any other is refused
+type Auditor struct {
+	Repos    map[string]bool // the repository URLs this auditor serves; any other is refused
 	WorkDir  string          // clones live here, one per repository URL
 	RerunCmd []string        // run per gate; exit 0 passes, 1 rejects; empty rejects everything
 	Exec     executor.Executor
@@ -35,8 +35,8 @@ type Runner struct {
 
 	mu     sync.Mutex
 	locks  map[string]chan struct{} // one per repository URL, guarding its clone
-	passed map[string]bool          // passKey of every re-run this runner passed; also in WorkDir/passes
-	// ponytail: one runner host owns its passes file; replicas would need a
+	passed map[string]bool          // passKey of every re-run this auditor passed; also in WorkDir/passes
+	// ponytail: one auditor host owns its passes file; replicas would need a
 	// shared store.
 }
 
@@ -45,7 +45,7 @@ type Runner struct {
 // the re-run command, so a pass from a reviewer since replaced counts for
 // nothing. Later checks are empty commits on top, so the final tip of a pass
 // yields the same check commit as the tip the gate was re-run on.
-func (r *Runner) passKey(dir, repoURL, gate, baseID, tip string) (string, error) {
+func (r *Auditor) passKey(dir, repoURL, gate, baseID, tip string) (string, error) {
 	check, err := chain.CheckCommit(dir, baseID, tip, gate)
 	if err != nil {
 		return "", err
@@ -54,9 +54,9 @@ func (r *Runner) passKey(dir, repoURL, gate, baseID, tip string) (string, error)
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// loadPasses reads WorkDir/passes once, so a restarted runner still knows
+// loadPasses reads WorkDir/passes once, so a restarted auditor still knows
 // every re-run it passed. Call with r.mu held.
-func (r *Runner) loadPasses() error {
+func (r *Auditor) loadPasses() error {
 	if r.passed != nil {
 		return nil
 	}
@@ -72,7 +72,7 @@ func (r *Runner) loadPasses() error {
 }
 
 // recordPass notes a passed re-run, on disk before in memory.
-func (r *Runner) recordPass(key string) error {
+func (r *Auditor) recordPass(key string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.loadPasses(); err != nil {
@@ -99,7 +99,7 @@ func (r *Runner) recordPass(key string) error {
 	return nil
 }
 
-func (r *Runner) hasPass(key string) (bool, error) {
+func (r *Auditor) hasPass(key string) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	err := r.loadPasses()
@@ -109,8 +109,8 @@ func (r *Runner) hasPass(key string) (bool, error) {
 // Remote refs are always named in full here: a tag called origin/main would
 // otherwise win over the remote-tracking branch.
 
-// checkBase refuses a base the runner did not choose. The workflow, which an
-// author's machine can run, names the base; the runner trusts only
+// checkBase refuses a base the auditor did not choose. The workflow, which an
+// worker's machine can run, names the base; the auditor trusts only
 // base_branch from the manifest on the repository's default branch, and only
 // commits that branch has held.
 func checkBase(ctx context.Context, dir, base, baseID string) error {
@@ -133,7 +133,7 @@ func checkBase(ctx context.Context, dir, base, baseID string) error {
 // lock serialises work on one repository's clone, so a slow fetch of one
 // repository never holds up another. Waiting ends with ctx: an activity that
 // timed out must not queue behind one Temporal has already given up on.
-func (r *Runner) lock(ctx context.Context, repoURL string) (unlock func(), err error) {
+func (r *Auditor) lock(ctx context.Context, repoURL string) (unlock func(), err error) {
 	r.mu.Lock()
 	if r.locks == nil {
 		r.locks = map[string]chan struct{}{}
@@ -154,12 +154,12 @@ func (r *Runner) lock(ctx context.Context, repoURL string) (unlock func(), err e
 
 // sync clones the repository once and fetches its branches; reads go through
 // commit IDs, never the working tree.
-func (r *Runner) sync(ctx context.Context, repoURL string) (string, error) {
+func (r *Auditor) sync(ctx context.Context, repoURL string) (string, error) {
 	// The URL comes from a workflow anyone with Temporal access can start;
 	// clone only what the operator listed.
 	if !r.Repos[repoURL] {
 		return "", temporal.NewNonRetryableApplicationError(
-			"repository "+repoURL+" is not served by this runner (tardis runner --repo)", "Malformed", nil)
+			"repository "+repoURL+" is not served by this auditor (tardis auditor --repo)", "Malformed", nil)
 	}
 	sum := sha256.Sum256([]byte(repoURL))
 	dir := filepath.Join(r.WorkDir, hex.EncodeToString(sum[:8]))
@@ -201,7 +201,7 @@ func (r *Runner) sync(ctx context.Context, repoURL string) (string, error) {
 // uses the pinned commit, so the policy cannot change half way through. The
 // base branch is the one the default branch's manifest names, never one the
 // request brings: a branch cannot pick the policy it is held to.
-func (r *Runner) Resolve(ctx context.Context, in ResolveIn) (ResolveOut, error) {
+func (r *Auditor) Resolve(ctx context.Context, in ResolveIn) (ResolveOut, error) {
 	defer heartbeat(ctx)()
 	unlock, err := r.lock(ctx, in.RepoURL)
 	if err != nil {
@@ -254,7 +254,7 @@ func gatesFor(dir, base, baseID, sha string) ([]manifest.Gate, error) {
 }
 
 // Attest judges the check commits for gates on tip.
-func (r *Runner) Attest(ctx context.Context, in AttestIn) (map[string]string, error) {
+func (r *Auditor) Attest(ctx context.Context, in AttestIn) (map[string]string, error) {
 	defer heartbeat(ctx)()
 	unlock, err := r.lock(ctx, in.RepoURL)
 	if err != nil {
@@ -270,9 +270,9 @@ func (r *Runner) Attest(ctx context.Context, in AttestIn) (map[string]string, er
 
 // Rerun is this build's stand-in for the independent review: the operator's
 // command, never one from the repository under review.
-func (r *Runner) Rerun(ctx context.Context, in RerunIn) (Verdict, error) {
+func (r *Auditor) Rerun(ctx context.Context, in RerunIn) (Verdict, error) {
 	if len(r.RerunCmd) == 0 {
-		return Verdict{Reason: "this runner has no re-run configured"}, nil
+		return Verdict{Reason: "this auditor has no re-run configured"}, nil
 	}
 	defer heartbeat(ctx)()
 	// The lock is held through the command: re-runs of one repository share
@@ -323,8 +323,8 @@ func (r *Runner) Rerun(ctx context.Context, in RerunIn) (Verdict, error) {
 		Dir:  dir,
 		Env: []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home,
 			"TARDIS_GATE=" + in.Gate, "TARDIS_SHA=" + in.Tip, "TARDIS_BASE=" + in.BaseID},
-		// None of the runner's environment, and an empty HOME. It still runs
-		// as the runner's user; the provider re-run (build 4) gets a sandbox.
+		// None of the auditor's environment, and an empty HOME. It still runs
+		// as the auditor's user; the provider re-run (build 4) gets a sandbox.
 		Clean: true,
 	}, func(string) {})
 	if err != nil {
@@ -343,11 +343,11 @@ func (r *Runner) Rerun(ctx context.Context, in RerunIn) (Verdict, error) {
 }
 
 // PostCheck records a check run. A failure is posted as asked: it can only
-// block a merge. A success is posted only if this runner passed a re-run of
+// block a merge. A success is posted only if this auditor passed a re-run of
 // the gate on the same diff and the chain on the SHA is valid, so a workflow
 // run by anyone else cannot produce one.
 // ponytail: log line until the GitHub App posts them.
-func (r *Runner) PostCheck(ctx context.Context, in CheckIn) error {
+func (r *Auditor) PostCheck(ctx context.Context, in CheckIn) error {
 	if in.Conclusion == "success" {
 		defer heartbeat(ctx)()
 		unlock, err := r.lock(ctx, in.RepoURL)
@@ -388,7 +388,7 @@ func (r *Runner) PostCheck(ctx context.Context, in CheckIn) error {
 // resolved on: anything pushed to either since has not been reviewed.
 // ponytail: log line until the GitHub App lands; there, the check and the
 // open are two calls, and the merge (build 5) is pinned to the SHA.
-func (r *Runner) OpenPR(ctx context.Context, in OpenPRIn) (string, error) {
+func (r *Auditor) OpenPR(ctx context.Context, in OpenPRIn) (string, error) {
 	defer heartbeat(ctx)()
 	unlock, err := r.lock(ctx, in.RepoURL)
 	if err != nil {
@@ -418,7 +418,7 @@ func (r *Runner) OpenPR(ctx context.Context, in OpenPRIn) (string, error) {
 	}
 	// The workflow is not trusted to say the gates passed. Every gate the
 	// current base requires must hold a valid check on this head and a pass
-	// this runner recorded on this base: one earned on any other base opens
+	// this auditor recorded on this base: one earned on any other base opens
 	// nothing.
 	gates, err := gatesFor(dir, in.Base, in.BaseID, in.Head)
 	if err != nil {
