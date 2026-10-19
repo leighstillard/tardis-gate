@@ -62,6 +62,11 @@ func Blind(ctx context.Context, ask provider.Func, gatePrompt, diff, runbook str
 	if err := decode(out, '[', ']', &f); err != nil {
 		return nil, fmt.Errorf("blind review: %w", err)
 	}
+	for _, x := range f {
+		if strings.TrimSpace(x.Claim) == "" { // [{}] is a broken answer, not a finding to wave through
+			return nil, fmt.Errorf("blind review: a finding with no claim in %.200q", out)
+		}
+	}
 	return f, nil
 }
 
