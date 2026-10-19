@@ -64,7 +64,7 @@ func (c Config) Check() error {
 				errs = append(errs, fmt.Errorf("base_url %q is not an http(s) URL", c.BaseURL))
 			} else if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 				errs = append(errs, errors.New("base_url must not carry credentials, a query or a fragment; keys come from the environment"))
-			} else if _, keyed := keys[u.Hostname()]; keyed && u.Scheme != "https" {
+			} else if _, keyed := keys[strings.ToLower(u.Hostname())]; keyed && u.Scheme != "https" {
 				errs = append(errs, fmt.Errorf("base_url %q takes a key, so it must be https", c.BaseURL))
 			}
 		}
@@ -138,7 +138,7 @@ func hostOf(raw string) string {
 	if err != nil {
 		return ""
 	}
-	return u.Hostname()
+	return strings.ToLower(u.Hostname())
 }
 
 // Digest identifies the reviewer c describes.
@@ -187,7 +187,7 @@ func keyFor(base string, getenv func(string) string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	env, ok := keys[u.Hostname()]
+	env, ok := keys[strings.ToLower(u.Hostname())]
 	if !ok {
 		return "", nil // a local or self-hosted endpoint: no key
 	}

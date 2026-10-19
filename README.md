@@ -91,8 +91,10 @@ checked without trusting anything but the history.
 ### The checker must not be the worker
 
 The auditor holds the only credentials that can post evidence or merge: the GitHub App key,
-the model provider key and the Temporal key for its side. The developer's machine holds
-none of them. It can push code and nothing else.
+its model provider key and the Temporal key for its side. The developer's machine holds
+none of them. It can push code and nothing else. (`tardis review` on the developer's
+machine uses the developer's own provider key, if any; that key vouches for nothing,
+because the auditor re-runs the review with its own.)
 
 So an agent on the developer's machine cannot approve its own work, however it behaves.
 The worst it can do is write false claims, and the auditor exists to catch those.

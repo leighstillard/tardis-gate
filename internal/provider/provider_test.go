@@ -38,6 +38,7 @@ func TestCheck(t *testing.T) {
 		{BaseURL: "ftp://x", Model: "m"},
 		{Model: "m", Command: []string{"x"}},
 		{BaseURL: "http://api.openai.com/v1", Model: "m"},
+		{BaseURL: "http://API.OPENAI.COM/v1", Model: "m"},
 		{BaseURL: "https://tok@llm.example/v1", Model: "m"},
 		{BaseURL: "https://llm.example/v1?key=x", Model: "m"},
 		{Type: "exec", Command: []string{"codex"}, Vendor: "openai", Model: "trusted"},
@@ -62,6 +63,7 @@ func TestKnownEndpointsOutrankVendor(t *testing.T) {
 		{Config{BaseURL: "https://api.openai.com/v1", Vendor: "anthropic"}, "openai"},
 		{Config{Model: "qwen/q", Vendor: "anthropic"}, "qwen"},
 		{Config{BaseURL: "https://openrouter.ai:443/api/v1", Model: "openai/m", Vendor: "anthropic"}, "openai"},
+		{Config{BaseURL: "https://API.OpenAI.com/v1", Model: "m", Vendor: "anthropic"}, "openai"},
 		{Config{BaseURL: "http://localhost:11434/v1", Vendor: "Google"}, "google"},
 		{Config{Type: "anthropic", BaseURL: "https://proxy.example/v1"}, "anthropic"},
 	} {
