@@ -36,13 +36,18 @@ func rulesetApply(args []string, stdout, stderr io.Writer) int {
 	}
 	// The base comes from the default branch on origin, never the checkout:
 	// a feature branch must not move protection off the real base.
+	// set-head follows a renamed default branch, which a fetch does not.
 	if _, err := gitLine(*repo, "fetch", "-q", "origin"); err != nil {
+		fmt.Fprintln(stderr, "ruleset apply:", err)
+		return 2
+	}
+	if _, err := gitLine(*repo, "remote", "set-head", "origin", "--auto"); err != nil {
 		fmt.Fprintln(stderr, "ruleset apply:", err)
 		return 2
 	}
 	m, err := manifest.LoadRev(*repo, "refs/remotes/origin/HEAD")
 	if err != nil {
-		fmt.Fprintln(stderr, "ruleset apply: manifest on origin's default branch (git remote set-head origin -a sets it):", err)
+		fmt.Fprintln(stderr, "ruleset apply: manifest on origin's default branch:", err)
 		return 2
 	}
 	origin, err := gitLine(*repo, "remote", "get-url", "origin")
@@ -147,6 +152,9 @@ func hookCheck(args []string, stdout, stderr io.Writer) int {
 	if _, code, ok := parse(fs, "hook check [--repo <dir>]", args, 0, stderr); !ok {
 		return code
 	}
+	if top, err := gitLine(*repo, "rev-parse", "--show-toplevel"); err == nil {
+		*repo = top // gh pr create may run in a subdirectory
+	}
 	m, err := manifest.Load(*repo)
 	if errors.Is(err, manifest.ErrNotEnrolled) {
 		return 0
@@ -168,6 +176,9 @@ func hookCheck(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 		slices.Sort(bad)
+		if len(bad) == 0 { // a policy refusal chainVerify has explained, not an invalid chain
+			break
+		}
 		fmt.Fprintf(stderr, "tardis hook: refusing gh pr create: %s; run tardis request, which opens the PR\n", strings.Join(bad, ", "))
 		return 1
 	}

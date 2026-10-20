@@ -248,6 +248,15 @@ func (r *Auditor) Merge(ctx context.Context, in MergeIn) (string, error) {
 	if !m.AutoMerge {
 		return "", nil
 	}
+	pr, err := r.App.GetPR(ctx, repo, in.Number)
+	if err != nil {
+		return "", err
+	}
+	// A retry whose merge landed but whose result was lost: the base has
+	// moved by that very merge, so this comes before unmovedBase.
+	if pr.Merged && pr.Head.SHA == in.Head && pr.Base.Ref == in.Base {
+		return pr.Merge, nil
+	}
 	if err := unmovedBase(ctx, dir, in.Base, in.BaseID); err != nil {
 		return "", err
 	}
@@ -257,10 +266,6 @@ func (r *Auditor) Merge(ctx context.Context, in MergeIn) (string, error) {
 	}
 	// The merge API pins only the head: a PR retargeted since it was opened
 	// would land the reviewed head on a base it was never gated for.
-	pr, err := r.App.GetPR(ctx, repo, in.Number)
-	if err != nil {
-		return "", err
-	}
 	if pr.State != "open" || pr.User.Login != login || pr.Base.Ref != in.Base || pr.Head.SHA != in.Head {
 		return "", temporal.NewNonRetryableApplicationError(fmt.Sprintf(
 			"refusing to merge: PR #%d is %s, by %s, from %.12s into %s; want open, by %s, from %.12s into %s",

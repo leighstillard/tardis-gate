@@ -116,6 +116,8 @@ func (g *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var in map[string]string
 		json.NewDecoder(r.Body).Decode(&in)
 		g.merged, g.method = in["sha"], in["merge_method"]
+		n, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(p, "/repos/o/r/pulls/"), "/merge"))
+		g.prs[n-1]["state"], g.prs[n-1]["merged"], g.prs[n-1]["merge_commit_sha"] = "closed", true, "m1"
 		w.Write([]byte(`{"sha": "m1"}`))
 	default:
 		http.Error(w, "unexpected "+r.Method+" "+r.URL.String(), 404)
@@ -195,6 +197,10 @@ func TestTheAppOpensAndMergesOnlyWhatPassed(t *testing.T) {
 	gh.prs[0]["base"] = map[string]any{"ref": "main"}
 	if sha, err := r.Merge(ctx, merge); sha != "m1" || err != nil || gh.merged != check || gh.method != "squash" {
 		t.Errorf("Merge = %q, %v, merged %q by %q", sha, err, gh.merged, gh.method)
+	}
+	gh.merged = ""
+	if sha, err := r.Merge(ctx, merge); sha != "m1" || err != nil || gh.merged != "" {
+		t.Errorf("retried Merge = %q, %v, merged again %q; want m1 from the merged PR", sha, err, gh.merged)
 	}
 	if _, err := r.Merge(ctx, MergeIn{RepoURL: url, Base: "main", BaseID: base, Head: "f00d", Number: 1}); !errors.As(err, &ae) || ae.Type() != "Rejected" {
 		t.Errorf("merge of a head without tardis/complete: %v; want Rejected", err)

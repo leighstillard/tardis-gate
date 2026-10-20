@@ -44,6 +44,16 @@ func TestHookCheckRefusesAMissingGate(t *testing.T) {
 	if code != 1 || !strings.Contains(stderr, "refusing gh pr create: simplify missing") {
 		t.Errorf("missing simplify: exit %d: %s", code, stderr)
 	}
+	if code, _, stderr := runCLI("hook", "check", "--repo", filepath.Join(dir, ".tardis")); code != 1 {
+		t.Errorf("from a subdirectory: exit %d: %s; want the same refusal", code, stderr)
+	}
+	git("checkout", "-q", "main")
+	git("commit", "-q", "--allow-empty", "-m", "base moves on")
+	git("update-ref", "refs/remotes/origin/main", "main")
+	git("checkout", "-q", "feature")
+	if code, _, stderr := runCLI("hook", "check", "--repo", dir); code != 0 || !strings.Contains(stderr, "not checked") {
+		t.Errorf("behind the base: exit %d: %s; want let through, not an empty refusal", code, stderr)
+	}
 	git("update-ref", "-d", "refs/remotes/origin/main")
 	if code, _, stderr := runCLI("hook", "check", "--repo", dir); code != 0 || !strings.Contains(stderr, "not checked") {
 		t.Errorf("no origin/main: exit %d: %s; want let through", code, stderr)
