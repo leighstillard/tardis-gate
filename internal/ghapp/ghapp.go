@@ -1,6 +1,6 @@
 // Package ghapp acts as the auditor's GitHub App: an RS256 JWT for the App,
 // an installation token per repository, cached until shortly before it
-// expires, and check runs. No SDK.
+// expires, check runs, pull requests and merges. No SDK.
 package ghapp
 
 import (
@@ -33,6 +33,8 @@ type App struct {
 
 	mu     sync.Mutex
 	tokens map[string]token // installation token per owner/repo
+	appID  int64            // from GET /app, once
+	login  string           // the App's bot user, which opens its PRs
 }
 
 type token struct {
@@ -141,21 +143,147 @@ const (
 
 // PostCheck posts c on sha in repo.
 func (a *App) PostCheck(ctx context.Context, repo, sha string, c CheckRun) error {
-	tok, err := a.token(ctx, repo)
-	if err != nil {
-		return err
-	}
-	err = a.do(ctx, "POST", "/repos/"+repo+"/check-runs", "token "+tok, map[string]any{
+	_, err := a.repoDo(ctx, repo, "POST", "/repos/"+repo+"/check-runs", "", map[string]any{
 		"name": c.Name, "head_sha": sha, "status": "completed", "conclusion": c.Conclusion,
 		"output": map[string]string{"title": clipTo(c.Title, maxTitle), "summary": clip(c.Summary), "text": clip(c.Text)},
 	}, nil)
+	return err
+}
+
+// Identity is the App's numeric ID, which its check runs carry, and the
+// login of its bot user, which opens its PRs.
+func (a *App) Identity(ctx context.Context) (int64, string, error) {
+	a.mu.Lock()
+	id, login := a.appID, a.login
+	a.mu.Unlock()
+	if id != 0 {
+		return id, login, nil
+	}
+	jwt, err := a.jwt()
+	if err != nil {
+		return 0, "", err
+	}
+	var app struct {
+		ID   int64
+		Slug string
+	}
+	if err := a.do(ctx, "GET", "/app", "Bearer "+jwt, nil, &app); err != nil {
+		return 0, "", err
+	}
+	a.mu.Lock()
+	a.appID, a.login = app.ID, app.Slug+"[bot]"
+	a.mu.Unlock()
+	return app.ID, app.Slug + "[bot]", nil
+}
+
+// Run is one check run on a commit.
+type Run struct {
+	Name, Status, Conclusion string
+	App                      struct{ ID int64 }
+}
+
+// Runs lists the latest check run of each name on sha.
+func (a *App) Runs(ctx context.Context, repo, sha string) ([]Run, error) {
+	var all []Run
+	for page := 1; ; page++ {
+		var out struct {
+			Total int   `json:"total_count"`
+			Runs  []Run `json:"check_runs"`
+		}
+		if _, err := a.repoDo(ctx, repo, "GET", fmt.Sprintf("/repos/%s/commits/%s/check-runs?filter=latest&per_page=100&page=%d",
+			repo, url.PathEscape(sha), page), "", nil, &out); err != nil {
+			return nil, err
+		}
+		all = append(all, out.Runs...)
+		if len(out.Runs) < 100 || len(all) >= out.Total {
+			return all, nil
+		}
+	}
+}
+
+// PR is a pull request, as far as tardis needs one.
+type PR struct {
+	Number int    `json:"number"`
+	URL    string `json:"html_url"`
+	State  string `json:"state"`
+	Merged bool   `json:"merged"` // only on a single PR's GET
+	Merge  string `json:"merge_commit_sha"`
+	User   struct{ Login string }
+	Head   struct{ Ref, SHA string }
+	Base   struct{ Ref string }
+}
+
+// ErrNotModified is a list that has not changed since its ETag.
+var ErrNotModified = errors.New("not modified")
+
+// OpenPRs lists repo's open PRs, or returns ErrNotModified if they are as
+// they were at etag; a 304 costs no rate limit.
+// ponytail: the first 100 only; page on if a repository holds more open PRs.
+func (a *App) OpenPRs(ctx context.Context, repo, etag string) ([]PR, string, error) {
+	var prs []PR
+	tag, err := a.repoDo(ctx, repo, "GET", "/repos/"+repo+"/pulls?state=open&per_page=100", etag, nil, &prs)
+	return prs, tag, err
+}
+
+// FindPR returns the open PR from branch in repo itself, or nil.
+func (a *App) FindPR(ctx context.Context, repo, branch string) (*PR, error) {
+	owner, _, _ := strings.Cut(repo, "/")
+	var prs []PR
+	if _, err := a.repoDo(ctx, repo, "GET", "/repos/"+repo+"/pulls?state=open&head="+url.QueryEscape(owner+":"+branch), "", nil, &prs); err != nil {
+		return nil, err
+	}
+	if len(prs) == 0 {
+		return nil, nil
+	}
+	return &prs[0], nil
+}
+
+// GetPR reads PR n.
+func (a *App) GetPR(ctx context.Context, repo string, n int) (PR, error) {
+	var pr PR
+	_, err := a.repoDo(ctx, repo, "GET", fmt.Sprintf("/repos/%s/pulls/%d", repo, n), "", nil, &pr)
+	return pr, err
+}
+
+// CreatePR opens a PR from branch into base, as the App.
+func (a *App) CreatePR(ctx context.Context, repo, branch, base, title, body string) (PR, error) {
+	var pr PR
+	_, err := a.repoDo(ctx, repo, "POST", "/repos/"+repo+"/pulls", "",
+		map[string]string{"head": branch, "base": base, "title": title, "body": body}, &pr)
+	return pr, err
+}
+
+// ErrHeadMoved is a merge GitHub refused because the PR's head is no longer
+// the SHA it was asked to merge.
+var ErrHeadMoved = errors.New("the PR's head moved")
+
+// Merge merges PR n with a merge commit, only while its head is sha, and
+// returns the merge commit.
+func (a *App) Merge(ctx context.Context, repo string, n int, sha string) (string, error) {
+	var out struct{ SHA string }
+	_, err := a.repoDo(ctx, repo, "PUT", fmt.Sprintf("/repos/%s/pulls/%d/merge", repo, n), "",
+		map[string]string{"sha": sha, "merge_method": "merge"}, &out)
+	if se := statusError(0); errors.As(err, &se) && se == http.StatusConflict {
+		return "", fmt.Errorf("%w: %w", ErrHeadMoved, err)
+	}
+	return out.SHA, err
+}
+
+// repoDo calls the API on repo with its installation token. A list sent
+// with etag that has not changed returns ErrNotModified.
+func (a *App) repoDo(ctx context.Context, repo, method, path, etag string, in, out any) (string, error) {
+	tok, err := a.token(ctx, repo)
+	if err != nil {
+		return "", err
+	}
+	tag, err := a.call(ctx, method, path, "token "+tok, etag, in, out)
 	var se statusError
 	if errors.As(err, &se) && se == http.StatusUnauthorized {
 		a.mu.Lock()
 		delete(a.tokens, repo) // revoked early: fetch a new one on the retry
 		a.mu.Unlock()
 	}
-	return err
+	return tag, err
 }
 
 func clip(s string) string { return clipTo(s, maxOutput) }
@@ -173,6 +301,12 @@ type statusError int
 func (s statusError) Error() string { return fmt.Sprintf("status %d", int(s)) }
 
 func (a *App) do(ctx context.Context, method, path, auth string, in, out any) error {
+	_, err := a.call(ctx, method, path, auth, "", in, out)
+	return err
+}
+
+// call is do, sending etag as If-None-Match, and returns the response's ETag.
+func (a *App) call(ctx context.Context, method, path, auth, etag string, in, out any) (string, error) {
 	api := a.API
 	if api == "" {
 		api = "https://api.github.com"
@@ -181,31 +315,37 @@ func (a *App) do(ctx context.Context, method, path, auth string, in, out any) er
 	if in != nil {
 		b, err := json.Marshal(in)
 		if err != nil {
-			return err
+			return "", err
 		}
 		body = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, api+path, body)
 	if err != nil {
-		return err
+		return "", err
 	}
 	req.Header.Set("Authorization", auth)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	if etag != "" {
+		req.Header.Set("If-None-Match", etag)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode == http.StatusNotModified && etag != "" {
+		return etag, ErrNotModified
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return err
+		return "", err
 	}
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("github: %s %s: %w: %.300s", method, path, statusError(resp.StatusCode), b)
+		return "", fmt.Errorf("github: %s %s: %w: %.300s", method, path, statusError(resp.StatusCode), b)
 	}
 	if out != nil {
-		return json.Unmarshal(b, out)
+		return resp.Header.Get("ETag"), json.Unmarshal(b, out)
 	}
-	return nil
+	return resp.Header.Get("ETag"), nil
 }

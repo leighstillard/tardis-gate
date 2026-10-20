@@ -8,10 +8,10 @@ It is a framework rather than a fixed policy. It ships four reference reviews, a
 repository that enrols chooses which to run and can add its own. It runs on Temporal Cloud
 or on a local `temporal server start-dev`.
 
-**Status:** builds 1 to 3 of 5 are in: check-commit evidence (released as v0.1.0), the
-gate manifest and the ship workflow on Temporal. The auditor's independent re-run and the
-PR gate are specified below and being built in public, followed by a traced tier
-(build 6) that ties each review to the worker's session telemetry.
+**Status:** builds 1 to 5 are in: check-commit evidence (released as v0.1.0), the gate
+manifest, the ship workflow on Temporal, the auditor's independent re-run and the PR gate.
+A traced tier (build 6), which ties each review to the worker's session telemetry, is
+specified below and being built in public.
 
 ## The problem
 
@@ -280,6 +280,29 @@ provider with a firewall rule, for example with nftables:
 ```
 meta skuid tardis-rerun ip daddr != <provider address> drop
 ```
+
+## The PR gate
+
+The App needs checks, pull requests and contents (write) and metadata (read). It never
+gets administration. Once per repository, the operator writes the base's two rulesets
+with their own `gh` login:
+
+```bash
+tardis ruleset apply --app-id 123456
+```
+
+`tardis-gates` makes every change to the base a PR that carries the App's
+`tardis/complete` success, with no bypass. `tardis-merge-only` lets only the App update
+the base. Running it again prints `unchanged`, or puts back anything edited since.
+
+When every gate has passed, the auditor opens the PR as the App and posts
+`tardis/complete`. It then watches CI on the head. With `auto_merge: true` in the base's
+`.tardis/config.yml`, it merges once CI is green, and only at the head the gates passed
+on. A PR opened any other way is marked incomplete within a poll (30 seconds).
+
+`tardis hook install` adds a `gh` wrapper to your shell rc file so that `gh pr create`
+refuses a branch whose gates have not passed. `tardis hook uninstall` removes it. The
+hook only saves a round trip; the rulesets are what enforce the gate.
 
 ## Secrets
 

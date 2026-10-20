@@ -40,6 +40,7 @@ type Config struct {
 	VerifyRunbook string          `yaml:"verify_runbook"`
 	Provider      provider.Config `yaml:"provider"`       // the blind review's model; default a free OpenRouter one
 	WorkerVendors []string        `yaml:"worker_vendors"` // vendors whose claims a must_differ_from gate accepts
+	AutoMerge     bool            `yaml:"auto_merge"`     // the App merges a PR once CI is green on its head
 }
 
 // GateRef enables, locates or narrows one gate.
@@ -70,6 +71,7 @@ type Manifest struct {
 	Gates         []Gate
 	Provider      provider.Config
 	WorkerVendors []string
+	AutoMerge     bool
 }
 
 // branchName is the subset of git's branch names a base may have; the rest
@@ -295,7 +297,7 @@ func load(read readFunc) (*Manifest, error) {
 	if len(cfg.Gates) > maxGates {
 		return nil, fmt.Errorf("gates: %d listed; at most %d", len(cfg.Gates), maxGates)
 	}
-	m := &Manifest{BaseBranch: cfg.BaseBranch, Provider: cfg.Provider, WorkerVendors: cfg.WorkerVendors}
+	m := &Manifest{BaseBranch: cfg.BaseBranch, Provider: cfg.Provider, WorkerVendors: cfg.WorkerVendors, AutoMerge: cfg.AutoMerge}
 	if m.BaseBranch == "" {
 		m.BaseBranch = "main"
 	}

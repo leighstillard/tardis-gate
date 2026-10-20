@@ -34,6 +34,9 @@ type fake struct {
 	onEvent func(e Event)                     // called inside Notify
 	postErr func(in CheckIn) error            // PostCheck's result; nil: ok
 	rerun   func(in RerunIn) (Verdict, error) // nil: pass
+	prNum   int                               // OpenPR's PR number; 0: no GitHub App
+	ci      func(in WatchIn) (CI, error)      // WatchPR's result; nil: success
+	merge   func(in MergeIn) (string, error)  // Merge's result; nil: "m1"
 }
 
 func (f *fake) log(s string) { f.mu.Lock(); f.calls = append(f.calls, s); f.mu.Unlock() }
@@ -83,9 +86,9 @@ func (f *fake) register(env *testsuite.TestWorkflowEnvironment) {
 		f.mu.Unlock()
 		return nil
 	})
-	reg(ActOpenPR, func(_ context.Context, in OpenPRIn) (string, error) {
+	reg(ActOpenPR, func(_ context.Context, in OpenPRIn) (PR, error) {
 		if in.Base != "main" || in.BaseID != "b0" {
-			return "", fmt.Errorf("open PR into %q at %q, want the resolved main at b0", in.Base, in.BaseID)
+			return PR{}, fmt.Errorf("open PR into %q at %q, want the resolved main at b0", in.Base, in.BaseID)
 		}
 		f.mu.Lock()
 		f.openPRs++
@@ -95,9 +98,26 @@ func (f *fake) register(env *testsuite.TestWorkflowEnvironment) {
 			open()
 		}
 		if f.openErr != nil {
-			return "", f.openErr
+			return PR{}, f.openErr
 		}
-		return "pr://" + in.Branch, nil
+		return PR{URL: "pr://" + in.Branch, Number: f.prNum}, nil
+	})
+	reg(ActWatchPR, func(_ context.Context, in WatchIn) (CI, error) {
+		f.log("watch:" + in.Head)
+		if f.ci != nil {
+			return f.ci(in)
+		}
+		return CI{Kind: "success"}, nil
+	})
+	reg(ActMerge, func(_ context.Context, in MergeIn) (string, error) {
+		f.log("merge:" + in.Head)
+		if in.Base != "main" || in.BaseID != "b0" {
+			return "", fmt.Errorf("merge into %q at %q, want the resolved main at b0", in.Base, in.BaseID)
+		}
+		if f.merge != nil {
+			return f.merge(in)
+		}
+		return "m1", nil
 	})
 	reg(ActNotify, func(_ context.Context, e Event) error {
 		f.mu.Lock()
@@ -249,6 +269,92 @@ func TestNewHeadDuringOpenPRIsNotLost(t *testing.T) {
 	}
 	if last := f.events[len(f.events)-1]; last != "completed c2+simplify" {
 		t.Errorf("last event %q; all %v", last, f.events)
+	}
+}
+
+func TestGreenCIMergesAtTheHead(t *testing.T) {
+	f := &fake{gates: []string{"simplify"}, prNum: 7}
+	env := newEnv(t, f)
+	env.ExecuteWorkflow(Ship, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"pr-created pr://feature", "ci success", "merged m1", "completed c1+simplify"}
+	if got := f.events[len(f.events)-4:]; !reflect.DeepEqual(got, want) {
+		t.Errorf("events\n got %v\nwant %v", f.events, want)
+	}
+	if !contains(f.calls, "merge:c1+simplify") {
+		t.Errorf("calls %v; want a merge pinned to the head", f.calls)
+	}
+}
+
+func TestNoAutoMergeCompletesAfterCI(t *testing.T) {
+	f := &fake{gates: []string{"simplify"}, prNum: 7, merge: func(MergeIn) (string, error) { return "", nil }}
+	env := newEnv(t, f)
+	env.ExecuteWorkflow(Ship, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if last := f.events[len(f.events)-2:]; !reflect.DeepEqual(last, []string{"ci success", "completed c1+simplify"}) {
+		t.Errorf("events %v", f.events)
+	}
+}
+
+func TestRedCIWaitsForAFix(t *testing.T) {
+	f := &fake{gates: []string{"simplify"}, prNum: 7}
+	f.ci = func(in WatchIn) (CI, error) {
+		if strings.HasPrefix(in.Head, "c1") {
+			return CI{Kind: "failure", Detail: "build failure"}, nil
+		}
+		return CI{Kind: "success"}, nil
+	}
+	env := newEnv(t, f)
+	env.RegisterDelayedCallback(func() { env.SignalWorkflow(SignalNewHead, NewHead{SHA: "c2"}) }, time.Hour)
+	env.ExecuteWorkflow(Ship, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(f.events, "ci failed: failure: build failure") || contains(f.calls, "merge:c1+simplify") || !contains(f.calls, "merge:c2+simplify") {
+		t.Errorf("events %v, calls %v; want c1 refused at CI and c2 merged", f.events, f.calls)
+	}
+}
+
+func TestMergeConflictOnHeadWaitsForTheNewHead(t *testing.T) {
+	// GitHub refused the merge (409): the PR is at another head now.
+	f := &fake{gates: []string{"simplify"}, prNum: 7}
+	f.merge = func(in MergeIn) (string, error) {
+		if strings.HasPrefix(in.Head, "c1") {
+			return "", temporal.NewNonRetryableApplicationError("moved", "HeadMoved", nil)
+		}
+		return "m2", nil
+	}
+	env := newEnv(t, f)
+	env.RegisterDelayedCallback(func() { env.SignalWorkflow(SignalNewHead, NewHead{SHA: "c2"}) }, time.Hour)
+	env.ExecuteWorkflow(Ship, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(f.events, "merge failed: the PR moved past the reviewed head; run tardis request on the new head") || !contains(f.events, "merged m2") {
+		t.Errorf("events %v; want no merge at c1, then the new head merged", f.events)
+	}
+}
+
+func TestNewHeadDuringCIStartsAgain(t *testing.T) {
+	f := &fake{gates: []string{"simplify"}, prNum: 7}
+	env := newEnv(t, f)
+	f.ci = func(in WatchIn) (CI, error) {
+		if strings.HasPrefix(in.Head, "c1") {
+			env.SignalWorkflow(SignalNewHead, NewHead{SHA: "c2"})
+			time.Sleep(time.Second) // the signal wins over this watch
+		}
+		return CI{Kind: "success"}, nil
+	}
+	env.ExecuteWorkflow(Ship, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if contains(f.calls, "merge:c1+simplify") || !contains(f.calls, "merge:c2+simplify") {
+		t.Errorf("calls %v; want only the new head merged", f.calls)
 	}
 }
 

@@ -30,7 +30,7 @@ import (
 
 // Auditor serves the auditor-side activities: it attests check commits,
 // re-runs each gate's review blind through the base's provider, and posts
-// check runs as the GitHub App. PRs are written to the log until build 5.
+// check runs as the GitHub App. It opens, watches and merges the PR (pr.go).
 type Auditor struct {
 	Repos     map[string]bool     // the repository URLs this auditor serves; any other is refused
 	WorkDir   string              // clones live here, one per repository URL
@@ -456,6 +456,9 @@ func (r *Auditor) PostCheck(ctx context.Context, in CheckIn) error {
 		return temporal.NewNonRetryableApplicationError(
 			"repository "+in.RepoURL+" is not served by this auditor (tardis auditor --repo)", "Malformed", nil)
 	}
+	if in.Gate == "complete" { // the required check: only OpenPR posts it
+		return temporal.NewNonRetryableApplicationError("tardis/complete is posted only when the App opens a PR", "Malformed", nil)
+	}
 	if in.Conclusion != "success" && in.Conclusion != "failure" { // neutral and skipped satisfy a required check
 		return temporal.NewNonRetryableApplicationError("conclusion "+in.Conclusion+": want success or failure", "Malformed", nil)
 	}
@@ -472,6 +475,11 @@ func (r *Auditor) PostCheck(ctx context.Context, in CheckIn) error {
 			return err
 		}
 		if err := checkBase(ctx, dir, in.Base, in.BaseID); err != nil {
+			return err
+		}
+		// A success is for the policy on BaseID; one the base has moved past
+		// may require more.
+		if err := unmovedBase(ctx, dir, in.Base, in.BaseID); err != nil {
 			return err
 		}
 		passed, rr, why, err := r.passedHere(dir, in.RepoURL, in.Gate, in.BaseID, in.SHA)
@@ -514,62 +522,6 @@ func (r *Auditor) passedHere(dir, repoURL, gate, baseID, sha string) (bool, reru
 		return false, rr, fmt.Sprintf("no re-run by %s passed here on %.12s", rr.cfg, baseID), err
 	}
 	return true, rr, "", nil
-}
-
-// OpenPR records the PR the App will open, only while the branch still points
-// at the head the gates passed on and the base at the commit they were
-// resolved on: anything pushed to either since has not been reviewed.
-// ponytail: log line until the GitHub App lands; there, the check and the
-// open are two calls, and the merge (build 5) is pinned to the SHA.
-func (r *Auditor) OpenPR(ctx context.Context, in OpenPRIn) (string, error) {
-	defer heartbeat(ctx)()
-	unlock, err := r.lock(ctx, in.RepoURL)
-	if err != nil {
-		return "", err
-	}
-	defer unlock()
-	dir, err := r.sync(ctx, in.RepoURL)
-	if err != nil {
-		return "", err
-	}
-	if now, err := gitOut(ctx, dir, "rev-parse", "refs/remotes/origin/"+in.Branch); err != nil {
-		return "", err
-	} else if now != in.Head {
-		return "", temporal.NewNonRetryableApplicationError(
-			in.Branch+" is at "+now+", not the reviewed "+in.Head, "BranchMoved", nil)
-	}
-	// The gates were resolved on BaseID; a base that moved since may hold a
-	// policy they never ran under.
-	if now, err := gitOut(ctx, dir, "rev-parse", "refs/remotes/origin/"+in.Base); err != nil {
-		return "", err
-	} else if now != in.BaseID {
-		return "", temporal.NewNonRetryableApplicationError(
-			in.Base+" is at "+now+", not "+in.BaseID+", where the gates were resolved", "BaseMoved", nil)
-	}
-	if err := checkBase(ctx, dir, in.Base, in.BaseID); err != nil {
-		return "", err
-	}
-	// The workflow is not trusted to say the gates passed. Every gate the
-	// current base requires must hold a valid check on this head and a pass
-	// this auditor recorded on this base: one earned on any other base opens
-	// nothing.
-	applied, err := gatesFor(dir, in.Base, in.BaseID, in.Head)
-	if err != nil {
-		return "", err
-	}
-	for _, g := range applied {
-		passed, _, why, err := r.passedHere(dir, in.RepoURL, g.Name, in.BaseID, in.Head)
-		if err != nil {
-			return "", err
-		}
-		if !passed {
-			return "", temporal.NewNonRetryableApplicationError(fmt.Sprintf(
-				"refusing to open a PR: %s on %.12s: %s", g.Name, in.Head, why), "Rejected", nil)
-		}
-	}
-	fmt.Fprintf(r.Log, "open-pr %s into %s at %s\n", in.Branch, in.Base, in.Head)
-	// Not a URL: no PR exists until the GitHub App lands (build 5).
-	return "stand-in:" + in.Branch + "@" + in.Head[:min(12, len(in.Head))] + " (no PR opened)", nil
 }
 
 // gitOut runs git, killed if ctx ends (an activity's deadline or cancellation).
