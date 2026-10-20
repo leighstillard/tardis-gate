@@ -225,11 +225,11 @@ func (a *App) OpenPRs(ctx context.Context, repo, etag string) ([]PR, string, err
 	return prs, tag, err
 }
 
-// FindPR returns the open PR from branch in repo itself, or nil.
-func (a *App) FindPR(ctx context.Context, repo, branch string) (*PR, error) {
+// FindPR returns the open PR from branch in repo itself into base, or nil.
+func (a *App) FindPR(ctx context.Context, repo, branch, base string) (*PR, error) {
 	owner, _, _ := strings.Cut(repo, "/")
 	var prs []PR
-	if _, err := a.repoDo(ctx, repo, "GET", "/repos/"+repo+"/pulls?state=open&head="+url.QueryEscape(owner+":"+branch), "", nil, &prs); err != nil {
+	if _, err := a.repoDo(ctx, repo, "GET", "/repos/"+repo+"/pulls?state=open&head="+url.QueryEscape(owner+":"+branch)+"&base="+url.QueryEscape(base), "", nil, &prs); err != nil {
 		return nil, err
 	}
 	if len(prs) == 0 {
@@ -257,12 +257,12 @@ func (a *App) CreatePR(ctx context.Context, repo, branch, base, title, body stri
 // the SHA it was asked to merge.
 var ErrHeadMoved = errors.New("the PR's head moved")
 
-// Merge merges PR n with a merge commit, only while its head is sha, and
-// returns the merge commit.
-func (a *App) Merge(ctx context.Context, repo string, n int, sha string) (string, error) {
+// Merge merges PR n by method (merge, squash or rebase), only while its head
+// is sha, and returns the commit it made.
+func (a *App) Merge(ctx context.Context, repo string, n int, sha, method string) (string, error) {
 	var out struct{ SHA string }
 	_, err := a.repoDo(ctx, repo, "PUT", fmt.Sprintf("/repos/%s/pulls/%d/merge", repo, n), "",
-		map[string]string{"sha": sha, "merge_method": "merge"}, &out)
+		map[string]string{"sha": sha, "merge_method": method}, &out)
 	if se := statusError(0); errors.As(err, &se) && se == http.StatusConflict {
 		return "", fmt.Errorf("%w: %w", ErrHeadMoved, err)
 	}

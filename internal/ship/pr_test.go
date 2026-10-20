@@ -12,7 +12,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -54,8 +56,10 @@ type fakeGitHub struct {
 	runs   map[string][]map[string]any // sha → check runs
 	prs    []map[string]any
 	ci     string // CI's status: in_progress or completed (success)
-	merged string // the head merged
+	merged string // the head merged, and how
+	method string
 	lists  int    // open-PR lists answered in full
+	origin string // the repository, for the head of a PR opened
 }
 
 func (g *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -98,15 +102,19 @@ func (g *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.lists++
 		w.Header().Set("ETag", tag)
 		json.NewEncoder(w).Encode(g.prs)
+	case r.Method == "GET" && strings.HasPrefix(p, "/repos/o/r/pulls/"):
+		n, _ := strconv.Atoi(strings.TrimPrefix(p, "/repos/o/r/pulls/"))
+		json.NewEncoder(w).Encode(g.prs[n-1])
 	case r.Method == "POST" && p == "/repos/o/r/pulls":
 		var in map[string]string
 		json.NewDecoder(r.Body).Decode(&in)
-		g.prs = append(g.prs, pr(len(g.prs)+1, "tardis[bot]", in["head"], "", in["base"]))
+		out, _ := exec.Command("git", "-C", g.origin, "rev-parse", "refs/heads/"+in["head"]).Output()
+		g.prs = append(g.prs, pr(len(g.prs)+1, "tardis[bot]", in["head"], strings.TrimSpace(string(out)), in["base"]))
 		json.NewEncoder(w).Encode(g.prs[len(g.prs)-1])
 	case r.Method == "PUT" && strings.HasSuffix(p, "/merge"):
 		var in map[string]string
 		json.NewDecoder(r.Body).Decode(&in)
-		g.merged = in["sha"]
+		g.merged, g.method = in["sha"], in["merge_method"]
 		w.Write([]byte(`{"sha": "m1"}`))
 	default:
 		http.Error(w, "unexpected "+r.Method+" "+r.URL.String(), 404)
@@ -140,12 +148,15 @@ func appAuditor(t *testing.T, gh http.Handler, config string) (*Auditor, string,
 	t.Cleanup(srv.Close)
 	app.API = srv.URL
 	local.Repos, local.App = map[string]bool{remote: true}, app
+	if g, ok := gh.(*fakeGitHub); ok {
+		g.origin = url
+	}
 	return local, remote, base, check
 }
 
 func TestTheAppOpensAndMergesOnlyWhatPassed(t *testing.T) {
 	gh := &fakeGitHub{runs: map[string][]map[string]any{}, ci: "in_progress"}
-	r, url, base, check := appAuditor(t, gh, "auto_merge: true\n")
+	r, url, base, check := appAuditor(t, gh, "auto_merge: true\nmerge_method: squash\n")
 	ctx := context.Background()
 	var ae *temporal.ApplicationError
 	open := OpenPRIn{RepoURL: url, Branch: "feature", Base: "main", BaseID: base, Head: check}
@@ -176,8 +187,13 @@ func TestTheAppOpensAndMergesOnlyWhatPassed(t *testing.T) {
 		t.Errorf("merge while CI runs: %v; want Rejected", err)
 	}
 	gh.ci = "completed"
-	if sha, err := r.Merge(ctx, merge); sha != "m1" || err != nil || gh.merged != check {
-		t.Errorf("Merge = %q, %v, merged %q", sha, err, gh.merged)
+	gh.prs[0]["base"] = map[string]any{"ref": "elsewhere"}
+	if _, err := r.Merge(ctx, merge); !errors.As(err, &ae) || ae.Type() != "Rejected" || gh.merged != "" {
+		t.Errorf("merge of a PR retargeted since it was opened: %v; want Rejected", err)
+	}
+	gh.prs[0]["base"] = map[string]any{"ref": "main"}
+	if sha, err := r.Merge(ctx, merge); sha != "m1" || err != nil || gh.merged != check || gh.method != "squash" {
+		t.Errorf("Merge = %q, %v, merged %q by %q", sha, err, gh.merged, gh.method)
 	}
 	if _, err := r.Merge(ctx, MergeIn{RepoURL: url, Base: "main", BaseID: base, Head: "f00d", Number: 1}); !errors.As(err, &ae) || ae.Type() != "Rejected" {
 		t.Errorf("merge of a head without tardis/complete: %v; want Rejected", err)
@@ -207,6 +223,7 @@ func TestForeignPRsAreMarkedIncomplete(t *testing.T) {
 		pr(1, "tardis[bot]", "feature", check, "main"),
 		pr(2, "someone", "hand", "abc", "main"),
 		pr(3, "someone", "other", "def", "release"),
+		pr(5, "someone", "copy", check, "main"), // the App's PR's head: failing it fails the App's PR
 	}
 	etags, marked := map[string]string{}, map[string]bool{}
 	for range 2 {

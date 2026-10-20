@@ -4,6 +4,7 @@ package manifest
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -41,6 +42,7 @@ type Config struct {
 	Provider      provider.Config `yaml:"provider"`       // the blind review's model; default a free OpenRouter one
 	WorkerVendors []string        `yaml:"worker_vendors"` // vendors whose claims a must_differ_from gate accepts
 	AutoMerge     bool            `yaml:"auto_merge"`     // the App merges a PR once CI is green on its head
+	MergeMethod   string          `yaml:"merge_method"`   // merge (default), squash or rebase
 }
 
 // GateRef enables, locates or narrows one gate.
@@ -72,6 +74,7 @@ type Manifest struct {
 	Provider      provider.Config
 	WorkerVendors []string
 	AutoMerge     bool
+	MergeMethod   string
 }
 
 // branchName is the subset of git's branch names a base may have; the rest
@@ -297,7 +300,8 @@ func load(read readFunc) (*Manifest, error) {
 	if len(cfg.Gates) > maxGates {
 		return nil, fmt.Errorf("gates: %d listed; at most %d", len(cfg.Gates), maxGates)
 	}
-	m := &Manifest{BaseBranch: cfg.BaseBranch, Provider: cfg.Provider, WorkerVendors: cfg.WorkerVendors, AutoMerge: cfg.AutoMerge}
+	m := &Manifest{BaseBranch: cfg.BaseBranch, Provider: cfg.Provider, WorkerVendors: cfg.WorkerVendors,
+		AutoMerge: cfg.AutoMerge, MergeMethod: cmp.Or(cfg.MergeMethod, "merge")}
 	if m.BaseBranch == "" {
 		m.BaseBranch = "main"
 	}
@@ -307,6 +311,9 @@ func load(read readFunc) (*Manifest, error) {
 			return c == "" || strings.HasPrefix(c, ".") || strings.HasSuffix(c, ".lock")
 		}) {
 		errs = append(errs, fmt.Errorf("base_branch %q is not a branch name git accepts", m.BaseBranch))
+	}
+	if !slices.Contains([]string{"merge", "squash", "rebase"}, m.MergeMethod) {
+		errs = append(errs, fmt.Errorf("merge_method %q: want merge, squash or rebase", m.MergeMethod))
 	}
 	if err := cfg.Provider.Check(); err != nil {
 		errs = append(errs, fmt.Errorf("provider: %w", err))

@@ -65,7 +65,7 @@ func TestPRCalls(t *testing.T) {
 			}
 			w.Write([]byte(`{"total_count": 101, "check_runs": [{"name": "tardis/review", "status": "completed", "conclusion": "failure", "app": {"id": 123}}]}`))
 		case "GET /repos/o/r/pulls":
-			if q.Get("head") == "o:b" {
+			if q.Get("head") == "o:b" && q.Get("base") == "main" {
 				w.Write([]byte(`[{"number": 4, "html_url": "u4", "user": {"login": "x"}, "head": {"ref": "b", "sha": "abc"}}]`))
 			} else if q.Get("head") != "" {
 				w.Write([]byte(`[]`))
@@ -84,7 +84,7 @@ func TestPRCalls(t *testing.T) {
 		case "PUT /repos/o/r/pulls/5/merge":
 			var in map[string]string
 			json.NewDecoder(r.Body).Decode(&in)
-			if in["sha"] != "abc" || in["merge_method"] != "merge" {
+			if in["sha"] != "abc" || in["merge_method"] != "squash" {
 				http.Error(w, "Head branch was modified", 409)
 				return
 			}
@@ -102,11 +102,11 @@ func TestPRCalls(t *testing.T) {
 	if err != nil || len(runs) != 101 || runs[100].App.ID != 123 || runs[100].Conclusion != "failure" {
 		t.Errorf("Runs: %d runs, %v", len(runs), err)
 	}
-	if pr, err := app.FindPR(ctx, "o/r", "b"); err != nil || pr == nil || pr.Number != 4 || pr.User.Login != "x" || pr.Head.SHA != "abc" {
+	if pr, err := app.FindPR(ctx, "o/r", "b", "main"); err != nil || pr == nil || pr.Number != 4 || pr.User.Login != "x" || pr.Head.SHA != "abc" {
 		t.Errorf("FindPR(b) = %+v, %v", pr, err)
 	}
-	if pr, err := app.FindPR(ctx, "o/r", "none"); pr != nil || err != nil {
-		t.Errorf("FindPR(none) = %+v, %v", pr, err)
+	if pr, err := app.FindPR(ctx, "o/r", "b", "release"); pr != nil || err != nil {
+		t.Errorf("FindPR(b into release) = %+v, %v", pr, err)
 	}
 	prs, tag, err := app.OpenPRs(ctx, "o/r", "")
 	if err != nil || tag != `"e1"` || len(prs) != 1 || prs[0].Base.Ref != "main" {
@@ -122,10 +122,10 @@ func TestPRCalls(t *testing.T) {
 	if pr, err := app.GetPR(ctx, "o/r", 5); err != nil || !pr.Merged || pr.Merge != "m" {
 		t.Errorf("GetPR = %+v, %v", pr, err)
 	}
-	if sha, err := app.Merge(ctx, "o/r", 5, "abc"); sha != "m" || err != nil {
+	if sha, err := app.Merge(ctx, "o/r", 5, "abc", "squash"); sha != "m" || err != nil {
 		t.Errorf("Merge = %q, %v", sha, err)
 	}
-	if _, err := app.Merge(ctx, "o/r", 5, "old"); !errors.Is(err, ErrHeadMoved) {
+	if _, err := app.Merge(ctx, "o/r", 5, "old", "squash"); !errors.Is(err, ErrHeadMoved) {
 		t.Errorf("Merge on a moved head: %v; want ErrHeadMoved", err)
 	}
 }

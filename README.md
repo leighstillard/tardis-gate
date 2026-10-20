@@ -298,7 +298,8 @@ the base. Running it again prints `unchanged`, or puts back anything edited sinc
 When every gate has passed, the auditor opens the PR as the App and posts
 `tardis/complete`. It then watches CI on the head. With `auto_merge: true` in the base's
 `.tardis/config.yml`, it merges once CI is green, and only at the head the gates passed
-on. A PR opened any other way is marked incomplete within a poll (30 seconds).
+on, into the base they were resolved on. `merge_method` picks merge (the default), squash
+or rebase. A PR opened any other way is marked incomplete within a poll (30 seconds).
 
 `tardis hook install` adds a `gh` wrapper to your shell rc file so that `gh pr create`
 refuses a branch whose gates have not passed. `tardis hook uninstall` removes it. The

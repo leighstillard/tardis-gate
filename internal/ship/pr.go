@@ -147,7 +147,7 @@ func (r *Auditor) OpenPR(ctx context.Context, in OpenPRIn) (PR, error) {
 		}
 	}
 	// A retry, or a later pass on the same branch, finds the App's PR open.
-	pr, err := r.App.FindPR(ctx, repo, in.Branch)
+	pr, err := r.App.FindPR(ctx, repo, in.Branch, in.Base)
 	if err != nil {
 		return PR{}, err
 	}
@@ -249,9 +249,20 @@ func (r *Auditor) Merge(ctx context.Context, in MergeIn) (string, error) {
 	if err := unmovedBase(ctx, dir, in.Base, in.BaseID); err != nil {
 		return "", err
 	}
-	appID, _, err := r.App.Identity(ctx)
+	appID, login, err := r.App.Identity(ctx)
 	if err != nil {
 		return "", err
+	}
+	// The merge API pins only the head: a PR retargeted since it was opened
+	// would land the reviewed head on a base it was never gated for.
+	pr, err := r.App.GetPR(ctx, repo, in.Number)
+	if err != nil {
+		return "", err
+	}
+	if pr.State != "open" || pr.User.Login != login || pr.Base.Ref != in.Base || pr.Head.SHA != in.Head {
+		return "", temporal.NewNonRetryableApplicationError(fmt.Sprintf(
+			"refusing to merge: PR #%d is %s, by %s, from %.12s into %s; want open, by %s, from %.12s into %s",
+			in.Number, pr.State, pr.User.Login, pr.Head.SHA, pr.Base.Ref, login, in.Head, in.Base), "Rejected", nil)
 	}
 	runs, err := r.App.Runs(ctx, repo, in.Head)
 	if err != nil {
@@ -265,7 +276,7 @@ func (r *Auditor) Merge(ctx context.Context, in MergeIn) (string, error) {
 		return "", temporal.NewNonRetryableApplicationError(fmt.Sprintf(
 			"refusing to merge: CI is not green on %.12s: %s", in.Head, detail), "Rejected", nil)
 	}
-	sha, err := r.App.Merge(ctx, repo, in.Number, in.Head)
+	sha, err := r.App.Merge(ctx, repo, in.Number, in.Head, m.MergeMethod)
 	if errors.Is(err, ghapp.ErrHeadMoved) {
 		return "", temporal.NewNonRetryableApplicationError(err.Error(), "HeadMoved", nil)
 	}
@@ -313,9 +324,18 @@ func (r *Auditor) markForeign(ctx context.Context, repoURL string, etags map[str
 	if err != nil {
 		return err
 	}
+	// A check run belongs to a commit, not a PR: a foreign PR at the head of
+	// one of the App's would fail the App's PR too. Its head passed the gates,
+	// and only the App can merge, so it is left alone.
+	ours := map[string]bool{}
+	for _, pr := range prs {
+		if pr.Base.Ref == base && pr.User.Login == login {
+			ours[pr.Head.SHA] = true
+		}
+	}
 	for _, pr := range prs {
 		key := fmt.Sprintf("%s#%d@%s", repo, pr.Number, pr.Head.SHA)
-		if pr.Base.Ref != base || pr.User.Login == login || marked[key] {
+		if pr.Base.Ref != base || ours[pr.Head.SHA] || marked[key] {
 			continue
 		}
 		why := fmt.Sprintf("PR #%d was opened by %s, not by tardis-gate. Only the App opens a PR, once every gate has passed: run tardis request on the branch.", pr.Number, pr.User.Login)

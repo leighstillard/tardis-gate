@@ -127,6 +127,14 @@ func TestRunbook(t *testing.T) {
 	}
 }
 
+func TestMergeMethod(t *testing.T) {
+	wantErr(t, copySample(t, map[string]string{ConfigPath: "merge_method: fast-forward\ngates:\n  - name: simplify\n"}), `merge_method "fast-forward"`)
+	m, err := Load(copySample(t, map[string]string{ConfigPath: "auto_merge: true\ngates:\n  - name: simplify\n"}))
+	if err != nil || !m.AutoMerge || m.MergeMethod != "merge" {
+		t.Errorf("auto_merge without merge_method: %+v, %v; want merge", m, err)
+	}
+}
+
 func TestGateValidation(t *testing.T) {
 	cfg := "gates:\n  - name: lint\n"
 	for name, tc := range map[string]struct{ yml, want string }{
