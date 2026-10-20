@@ -18,8 +18,10 @@ import (
 // PollEvery is how often the auditor looks at PRs and their CI.
 const PollEvery = 30 * time.Second
 
-// NoCI is how long a head with no CI check runs waits for one to appear
-// before it counts as green.
+// NoCI is how long a head waits for its CI check runs to appear before it
+// can count as green: one fast check done is not CI done while another
+// provider has yet to post its own.
+// ponytail: a fixed window; a list of required CI checks if one comes later.
 const NoCI = 2 * time.Minute
 
 // unmovedBase refuses a base that has moved past baseID: it may hold a policy
@@ -50,7 +52,7 @@ func succeeded(runs []ghapp.Run, appID int64, name string) bool {
 }
 
 // ciState judges CI on a head from its check runs, every one but the App's:
-// "" while any is running, or none has appeared and waited is false.
+// "" while any is running, or until waited, however many have finished.
 // ponytail: check runs only; read commit statuses too for CI that posts those.
 func ciState(runs []ghapp.Run, appID int64, waited bool) (kind, detail string) {
 	var pending, failed []string
@@ -70,7 +72,7 @@ func ciState(runs []ghapp.Run, appID int64, waited bool) (kind, detail string) {
 	switch {
 	case len(failed) > 0:
 		return "failure", strings.Join(failed, ", ")
-	case len(pending) > 0 || n == 0 && !waited:
+	case len(pending) > 0 || !waited:
 		return "", ""
 	case n == 0:
 		return "success", "(no CI check runs)"

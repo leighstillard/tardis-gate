@@ -284,7 +284,7 @@ meta skuid tardis-rerun ip daddr != <provider address> drop
 ## The PR gate
 
 The App needs checks, pull requests and contents (write) and metadata (read). It never
-gets administration. Once per repository, the operator writes the base's two rulesets
+gets administration. Once per repository, the operator writes the two rulesets on the base named by origin's default branch,
 with their own `gh` login:
 
 ```bash

@@ -40,7 +40,8 @@ func TestCIState(t *testing.T) {
 		{nil, false, "", ""},
 		{[]ghapp.Run{ours}, true, "success", "(no CI check runs)"},
 		{[]ghapp.Run{ours, run("ci", "in_progress", "", 2)}, true, "", ""},
-		{[]ghapp.Run{run("ci", "completed", "success", 2), run("lint", "completed", "skipped", 2)}, false, "success", ""},
+		{[]ghapp.Run{run("ci", "completed", "success", 2), run("lint", "completed", "skipped", 2)}, true, "success", ""},
+		{[]ghapp.Run{run("ci", "completed", "success", 2)}, false, "", ""}, // another CI may not have posted yet
 		{[]ghapp.Run{run("ci", "in_progress", "", 2), run("lint", "completed", "timed_out", 2)}, false, "failure", "lint timed_out"},
 	} {
 		if k, d := ciState(c.runs, 1, c.waited); k != c.kind || d != c.detail {

@@ -34,9 +34,15 @@ func rulesetApply(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ruleset apply: --app-id must be the App's numeric ID")
 		return 2
 	}
-	m, err := manifest.Load(*repo)
-	if err != nil {
+	// The base comes from the default branch on origin, never the checkout:
+	// a feature branch must not move protection off the real base.
+	if _, err := gitLine(*repo, "fetch", "-q", "origin"); err != nil {
 		fmt.Fprintln(stderr, "ruleset apply:", err)
+		return 2
+	}
+	m, err := manifest.LoadRev(*repo, "refs/remotes/origin/HEAD")
+	if err != nil {
+		fmt.Fprintln(stderr, "ruleset apply: manifest on origin's default branch (git remote set-head origin -a sets it):", err)
 		return 2
 	}
 	origin, err := gitLine(*repo, "remote", "get-url", "origin")
