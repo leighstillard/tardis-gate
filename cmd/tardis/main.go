@@ -25,6 +25,8 @@ const usage = `usage:
   tardis wait --tool <vendor/tool/model> [--repo <dir>] [--remote <name>]
   tardis review <gate>   (run by a gate under tardis request)
   tardis auditor --repo <url>... [--work-dir <dir>] [--app-id <id> --app-key <pem>] [--rerun-user <user>]
+  tardis ruleset apply --app-id <id> [--repo <dir>]
+  tardis hook install|uninstall [--rc <file>]
   tardis version
 `
 
@@ -48,6 +50,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return wait(args[1:], stdout, stderr)
 	case len(args) > 0 && (args[0] == "auditor" || args[0] == "runner"): // runner: the pre-v0.4 name; drop after one release
 		return auditor(args[1:], stdout, stderr)
+	case cmd == "ruleset apply":
+		return rulesetApply(args[2:], stdout, stderr)
+	case len(args) > 0 && args[0] == "hook":
+		return hook(args[1:], stdout, stderr)
 	case len(args) > 0 && args[0] == "review":
 		return reviewCmd(args[1:], stdout, stderr)
 	case len(args) == 1 && args[0] == "version":

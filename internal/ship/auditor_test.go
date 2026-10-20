@@ -132,7 +132,15 @@ func TestAuditorPassIsBoundToItsBaseAndClaim(t *testing.T) {
 	if err := success(m2, check); err == nil {
 		t.Error("a pass on base m1 authorised a success on base m2")
 	}
-	if err := success(m1, check); err != nil {
+	// Nor does it once the base has moved past m1: m2 may require more.
+	var ae *temporal.ApplicationError
+	if err := success(m1, check); !errors.As(err, &ae) || ae.Type() != "BaseMoved" {
+		t.Errorf("success on m1 after main moved to m2: %v; want BaseMoved", err)
+	}
+	if v, err := r.Rerun(ctx, RerunIn{RepoURL: url, Base: "main", BaseID: m2, Tip: check, Gate: "simplify"}); err != nil || !v.Pass {
+		t.Fatalf("rerun on m2: %+v, %v", v, err)
+	}
+	if err := success(m2, check); err != nil {
 		t.Errorf("success on the base the gate passed on: %v", err)
 	}
 
@@ -147,7 +155,7 @@ func TestAuditorPassIsBoundToItsBaseAndClaim(t *testing.T) {
 	if g("rev-parse", rewritten+"^{tree}") != g("rev-parse", check+"^{tree}") {
 		t.Fatal("rewritten check changed the tree")
 	}
-	if err := success(m1, rewritten); err == nil {
+	if err := success(m2, rewritten); err == nil {
 		t.Error("a pass for one check commit authorised a success for a rewritten one")
 	}
 }
@@ -357,6 +365,16 @@ func TestAuditorLockGivesUpWithItsContext(t *testing.T) {
 	defer cancel()
 	if _, err := r.lock(ctx, url); err == nil {
 		t.Error("a second lock on a held repository did not give up with its context")
+	} // One GitHub repository under two URLs is one lock.
+	gh, err := r.lock(context.Background(), "https://github.com/O/R.git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gh()
+	ctx, cancel = context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := r.lock(ctx, "git@github.com:o/r"); err == nil {
+		t.Error("the ssh URL did not wait for the https one's lock")
 	}
 }
 

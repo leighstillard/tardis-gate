@@ -3,6 +3,7 @@
 package ship
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -25,6 +26,8 @@ const (
 	ActRerun        = "Rerun"
 	ActPostCheck    = "PostCheck"
 	ActOpenPR       = "OpenPR"
+	ActWatchPR      = "WatchPR"
+	ActMerge        = "Merge"
 	ActWorkerReview = "AuthorReview" // v0.3 wire name, as AuditorQueue
 	ActNotify       = "Notify"
 )
@@ -48,7 +51,7 @@ type NewHead struct{ SHA string }
 
 // Event is one thing the worker hears about.
 type Event struct {
-	Kind   string // started | passed | rejected | failed | pr-created | completed
+	Kind   string // started | passed | rejected | failed | pr-created | ci | merged | completed
 	Pass   string // the pass it belongs to: <run ID>/<n>
 	Gate   string
 	SHA    string
@@ -74,6 +77,8 @@ func (e Event) String() string {
 		return fmt.Sprintf("%s %s: %s", e.Gate, e.Kind, e.Detail)
 	case "pr-created":
 		return "pr-created " + e.Detail
+	case "ci":
+		return "ci " + e.Detail
 	}
 	return strings.TrimSpace(e.Kind + " " + short + " " + e.Detail)
 }
@@ -108,8 +113,36 @@ type (
 		RepoURL, BaseID, Tip string
 		Gates                []string
 	}
-	RerunIn        struct{ RepoURL, Base, BaseID, Tip, Gate string }
-	CheckIn        struct{ RepoURL, Base, BaseID, SHA, Gate, Conclusion, Summary string }
-	OpenPRIn       struct{ RepoURL, Branch, Base, BaseID, Head string }
+	RerunIn  struct{ RepoURL, Base, BaseID, Tip, Gate string }
+	CheckIn  struct{ RepoURL, Base, BaseID, SHA, Gate, Conclusion, Summary string }
+	OpenPRIn struct{ RepoURL, Branch, Base, BaseID, Head string }
+	WatchIn  struct {
+		RepoURL, Base, Head string
+		Number              int
+	}
+	MergeIn struct {
+		RepoURL, Base, BaseID, Head string
+		Number                      int
+	}
 	WorkerReviewIn struct{ Gate, Base, BaseID, Code, Tip, GatesDigest string }
 )
+
+// PR is the PR OpenPR opened. Number is 0 when no GitHub App opened one.
+type PR struct {
+	URL    string
+	Number int
+}
+
+// UnmarshalJSON also reads OpenPR's v0.4 result, a bare URL, so the runs
+// recorded then still replay.
+func (p *PR) UnmarshalJSON(b []byte) error {
+	if len(b) > 0 && b[0] == '"' {
+		return json.Unmarshal(b, &p.URL)
+	}
+	type plain PR
+	return json.Unmarshal(b, (*plain)(p))
+}
+
+// CI is how the PR's head came out: Kind success or failure on its CI, or
+// moved, closed or merged when the PR itself changed first.
+type CI struct{ Kind, Detail string }

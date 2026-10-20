@@ -610,6 +610,7 @@ func TestCommitRefuses(t *testing.T) {
 		"CR in gate":    {"simplify\r", "s", "anthropic/claude-code/x"},
 		"JSON gate":     {"{security}", "s", "anthropic/claude-code/x"},
 		"dot gate":      {"..", "s", "anthropic/claude-code/x"},
+		"App's gate":    {"complete", "s", "anthropic/claude-code/x"},
 		"long gate":     {strings.Repeat("g", MaxGateName+1), "s", "anthropic/claude-code/x"},
 	} {
 		if _, err := Commit(r.dir, tc.gate, tc.summary, tc.tool); err == nil {

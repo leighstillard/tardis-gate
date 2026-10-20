@@ -35,8 +35,9 @@ func CheckGateName(gate string) error {
 	// A name is also a directory, .tardis/gates/<name>, so not . .. or with
 	// \ (a separator on Windows); { and [ start the JSON that
 	// `chain verify --gates` reads as manifest resolve output; and resolve's
-	// output must fit in one command-line argument.
-	if gate == "." || gate == ".." || strings.ContainsRune(gate, '\\') || strings.IndexAny(gate, "{[") == 0 {
+	// output must fit in one command-line argument. tardis/complete is the
+	// App's own check, which only the opening of a PR may post.
+	if gate == "." || gate == ".." || gate == "complete" || strings.ContainsRune(gate, '\\') || strings.IndexAny(gate, "{[") == 0 {
 		return fmt.Errorf("gate name %q is reserved", gate)
 	}
 	if len(gate) > MaxGateName {

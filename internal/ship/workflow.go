@@ -17,6 +17,7 @@ const (
 	HeartbeatTimeout = 45 * time.Second
 	ScheduleToStart  = 2 * time.Minute
 	MaxGateTime      = 20 * time.Minute
+	MaxCI            = 12 * time.Hour // a PR's CI, from opening to its last check run
 	ScheduleToClose  = 60 * time.Minute
 	AwaitDelivery    = 24 * time.Hour // notifications and check runs wait this long for a worker
 	AwaitFix         = 7 * 24 * time.Hour
@@ -145,9 +146,9 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 				head = newer
 				continue
 			}
-			var url string
+			var pr PR
 			err := workflow.ExecuteActivity(auditorOpts(ctx, 5*time.Minute), ActOpenPR,
-				OpenPRIn{RepoURL: in.RepoURL, Branch: in.Branch, Base: res.Base, BaseID: res.BaseID, Head: res.Tip}).Get(ctx, &url)
+				OpenPRIn{RepoURL: in.RepoURL, Branch: in.Branch, Base: res.Base, BaseID: res.BaseID, Head: res.Tip}).Get(ctx, &pr)
 			var ae *temporal.ApplicationError
 			moved := errors.As(err, &ae) && (ae.Type() == "BranchMoved" || ae.Type() == "BaseMoved")
 			if err != nil && !moved {
@@ -155,25 +156,33 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 				return "", err
 			}
 			if !moved {
-				notify(pctx, workerQ, Event{Kind: "pr-created", SHA: res.Tip, Detail: url})
-				notify(pctx, workerQ, Event{Kind: "completed", SHA: res.Tip})
-				// Last look, with nothing blocking before the return: Temporal
-				// does not let a run complete past a signal that arrived
-				// meanwhile, so a head requested up to here starts it again.
-				if newer := latest(heads, ""); newer != "" {
+				notify(pctx, workerQ, Event{Kind: "pr-created", SHA: res.Tip, Detail: pr.URL})
+				newer, done := land(pctx, in, res, pr, heads, workerQ)
+				if newer != "" {
 					head = newer
 					continue
 				}
-				return url, nil
+				if done {
+					notify(pctx, workerQ, Event{Kind: "completed", SHA: res.Tip})
+					// Last look, with nothing blocking before the return: Temporal
+					// does not let a run complete past a signal that arrived
+					// meanwhile, so a head requested up to here starts it again.
+					if newer := latest(heads, ""); newer != "" {
+						head = newer
+						continue
+					}
+					return pr.URL, nil
+				}
+			} else {
+				// The branch or the base moved since the gates ran, so no PR. Say so:
+				// a push made without tardis request signals nothing. A moved base
+				// may carry a new policy, which only a rebase brings under review.
+				detail := "the branch moved past the reviewed head; run tardis request on the new head"
+				if ae.Type() == "BaseMoved" {
+					detail = rebase
+				}
+				notify(pctx, workerQ, Event{Kind: "failed", Gate: "open-pr", SHA: res.Tip, Detail: detail})
 			}
-			// The branch or the base moved since the gates ran, so no PR. Say so:
-			// a push made without tardis request signals nothing. A moved base
-			// may carry a new policy, which only a rebase brings under review.
-			detail := "the branch moved past the reviewed head; run tardis request on the new head"
-			if ae.Type() == "BaseMoved" {
-				detail = "the base moved since the gates ran; rebase onto it and run tardis request again"
-			}
-			notify(pctx, workerQ, Event{Kind: "failed", Gate: "open-pr", SHA: res.Tip, Detail: detail})
 		}
 
 		// Rejected or failed: wait for the worker to push a fix and ask again.
@@ -189,6 +198,76 @@ func Ship(ctx workflow.Context, in Input) (string, error) {
 		}
 		head = sig.SHA
 	}
+}
+
+const rebase = "the base moved since the gates ran; rebase onto it and run tardis request again"
+
+func watchOpts(ctx workflow.Context) workflow.Context {
+	p := *retry
+	p.MaximumAttempts = 10 // GitHub hiccups over a long CI run
+	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		TaskQueue:              AuditorQueue,
+		ScheduleToStartTimeout: ScheduleToStart,
+		StartToCloseTimeout:    MaxCI,
+		ScheduleToCloseTimeout: AwaitDelivery,
+		HeartbeatTimeout:       HeartbeatTimeout,
+		RetryPolicy:            &p,
+	})
+}
+
+// land sees the open PR through CI and, if the base asks for auto_merge,
+// merges it. It returns a head requested meanwhile, or done when the run is
+// over; neither means the worker has been told why and must push a fix.
+func land(ctx workflow.Context, in Input, res outcome, pr PR, heads workflow.ReceiveChannel, workerQ string) (newer string, done bool) {
+	if pr.Number == 0 { // no GitHub App: nothing to watch
+		return "", true
+	}
+	failed := func(gate, why string) (string, bool) {
+		notify(ctx, workerQ, Event{Kind: "failed", Gate: gate, SHA: res.Tip, Detail: why})
+		return "", false
+	}
+	wctx, cancel := workflow.WithCancel(ctx)
+	defer cancel()
+	var ci CI
+	var err error
+	var sig NewHead
+	signalled := false
+	sel := workflow.NewSelector(ctx)
+	sel.AddFuture(workflow.ExecuteActivity(watchOpts(wctx), ActWatchPR, WatchIn{RepoURL: in.RepoURL, Base: res.Base, Number: pr.Number, Head: res.Tip}),
+		func(f workflow.Future) { err = f.Get(ctx, &ci) })
+	sel.AddReceive(heads, func(c workflow.ReceiveChannel, _ bool) { c.Receive(ctx, &sig); signalled = true })
+	sel.Select(ctx)
+	switch {
+	case signalled:
+		return sig.SHA, false
+	case err != nil:
+		return failed("ci", "watching the PR: "+reason(err, "auditor"))
+	case ci.Kind == "merged":
+		notify(ctx, workerQ, Event{Kind: "merged", SHA: ci.Detail})
+		return "", true
+	case ci.Kind == "closed":
+		return failed("ci", "the PR was closed; run tardis request to open it again")
+	case ci.Kind == "moved":
+		return failed("ci", "the PR moved past the reviewed head; run tardis request on the new head")
+	case ci.Kind != "success":
+		return failed("ci", ci.Kind+": "+ci.Detail)
+	}
+	notify(ctx, workerQ, Event{Kind: "ci", SHA: res.Tip, Detail: strings.TrimSpace("success " + ci.Detail)})
+	var sha string
+	err = workflow.ExecuteActivity(auditorOpts(ctx, 5*time.Minute), ActMerge,
+		MergeIn{RepoURL: in.RepoURL, Base: res.Base, BaseID: res.BaseID, Head: res.Tip, Number: pr.Number}).Get(ctx, &sha)
+	var ae *temporal.ApplicationError
+	switch {
+	case errors.As(err, &ae) && ae.Type() == "HeadMoved":
+		return failed("merge", "the PR moved past the reviewed head; run tardis request on the new head")
+	case errors.As(err, &ae) && ae.Type() == "BaseMoved":
+		return failed("merge", rebase)
+	case err != nil:
+		return failed("merge", reason(err, "auditor"))
+	case sha != "":
+		notify(ctx, workerQ, Event{Kind: "merged", SHA: sha})
+	}
+	return "", true
 }
 
 // runGates makes one pass over the gates for head. It never returns an error:

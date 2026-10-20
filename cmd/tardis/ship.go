@@ -378,7 +378,6 @@ func auditor(args []string, stdout, stderr io.Writer) int {
 		}
 		r.RerunUser = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
 	}
-	fmt.Fprintln(stderr, "tardis auditor: PRs are only logged until build 5.")
 	c, err := ship.Dial()
 	if err != nil {
 		fmt.Fprintln(stderr, "auditor: temporal:", err)
@@ -389,7 +388,7 @@ func auditor(args []string, stdout, stderr io.Writer) int {
 	rw := worker.New(c, ship.AuditorQueue, worker.Options{})
 	for name, fn := range map[string]any{
 		ship.ActResolve: r.Resolve, ship.ActAttest: r.Attest, ship.ActRerun: r.Rerun,
-		ship.ActPostCheck: r.PostCheck, ship.ActOpenPR: r.OpenPR,
+		ship.ActPostCheck: r.PostCheck, ship.ActOpenPR: r.OpenPR, ship.ActWatchPR: r.WatchPR, ship.ActMerge: r.Merge,
 	} {
 		rw.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -400,6 +399,11 @@ func auditor(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		defer w.Stop()
+	}
+	if r.App != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go r.MarkForeign(ctx)
 	}
 	fmt.Fprintf(stdout, "auditor polling %s and %s\n", ship.WorkflowQueue, ship.AuditorQueue)
 	<-worker.InterruptCh()
