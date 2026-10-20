@@ -13,13 +13,19 @@ import (
 // not required, so a new gate needs no ruleset change.
 const Check = "tardis/complete"
 
-// rulesets are the two the operator applies at enrol. tardis-gates makes
-// every change to base a PR carrying the App's tardis/complete success, with
-// no bypass at all; tardis-merge-only lets nothing but the App, through a PR,
-// update base. mode is the App's bypass mode.
+// rulesets are the two the operator applies at enrol, in the order applied.
+// tardis-merge-only lets nothing but the App, through a PR, update base;
+// tardis-gates makes every change to base a PR carrying the App's
+// tardis/complete success, with no bypass at all. merge-only goes first: alone,
+// tardis-gates would let anyone merge the App's PR before its CI is done.
+// mode is the App's bypass mode.
 func rulesets(base string, appID int64, mode string) []map[string]any {
 	cond := map[string]any{"ref_name": map[string]any{"include": []string{"refs/heads/" + base}, "exclude": []string{}}}
 	return []map[string]any{{
+		"name": "tardis-merge-only", "target": "branch", "enforcement": "active", "conditions": cond,
+		"bypass_actors": []any{map[string]any{"actor_id": appID, "actor_type": "Integration", "bypass_mode": mode}},
+		"rules":         []any{map[string]any{"type": "update"}, map[string]any{"type": "deletion"}, map[string]any{"type": "non_fast_forward"}},
+	}, {
 		"name": "tardis-gates", "target": "branch", "enforcement": "active", "conditions": cond,
 		"bypass_actors": []any{},
 		"rules": []any{
@@ -33,10 +39,6 @@ func rulesets(base string, appID int64, mode string) []map[string]any {
 				"required_status_checks":               []any{map[string]any{"context": Check, "integration_id": appID}},
 			}},
 		},
-	}, {
-		"name": "tardis-merge-only", "target": "branch", "enforcement": "active", "conditions": cond,
-		"bypass_actors": []any{map[string]any{"actor_id": appID, "actor_type": "Integration", "bypass_mode": mode}},
-		"rules":         []any{map[string]any{"type": "update"}, map[string]any{"type": "deletion"}, map[string]any{"type": "non_fast_forward"}},
 	}}
 }
 
@@ -72,7 +74,7 @@ func ApplyRulesets(ctx context.Context, api, token, repo, base string, appID int
 			}
 		}
 		err := c.do(ctx, method, path, auth, want, nil)
-		if se := statusError(0); errors.As(err, &se) && se == http.StatusUnprocessableEntity && i == 1 {
+		if se := statusError(0); errors.As(err, &se) && se == http.StatusUnprocessableEntity && i == 0 {
 			err = c.do(ctx, method, path, auth, always[i], nil) // only tardis-merge-only has a bypass
 		}
 		if err != nil {

@@ -117,8 +117,8 @@ type (
 	CheckIn  struct{ RepoURL, Base, BaseID, SHA, Gate, Conclusion, Summary string }
 	OpenPRIn struct{ RepoURL, Branch, Base, BaseID, Head string }
 	WatchIn  struct {
-		RepoURL, Head string
-		Number        int
+		RepoURL, Base, Head string
+		Number              int
 	}
 	MergeIn struct {
 		RepoURL, Base, BaseID, Head string

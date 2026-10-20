@@ -195,13 +195,17 @@ func (r *Auditor) WatchPR(ctx context.Context, in WatchIn) (CI, error) {
 		if err != nil {
 			return CI{}, err
 		}
+		// Head and base first: a merge of another head, or into another
+		// branch, is not this run's.
 		switch {
+		case pr.Head.SHA != in.Head:
+			return CI{Kind: "moved", Detail: pr.Head.SHA}, nil
+		case pr.Base.Ref != in.Base:
+			return CI{Kind: "retargeted", Detail: "the PR now targets " + pr.Base.Ref + ", not " + in.Base}, nil
 		case pr.Merged:
 			return CI{Kind: "merged", Detail: pr.Merge}, nil
 		case pr.State != "open":
 			return CI{Kind: "closed"}, nil
-		case pr.Head.SHA != in.Head:
-			return CI{Kind: "moved", Detail: pr.Head.SHA}, nil
 		}
 		runs, err := r.App.Runs(ctx, repo, in.Head)
 		if err != nil {

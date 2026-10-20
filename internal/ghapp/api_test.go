@@ -178,26 +178,26 @@ func TestApplyRulesets(t *testing.T) {
 		return strings.Join(out, ", ")
 	}
 
-	if got := apply(); got != "tardis-gates created, tardis-merge-only created" {
+	if got := apply(); got != "tardis-merge-only created, tardis-gates created" {
 		t.Errorf("first apply: %s", got)
 	}
-	gates := stored["1"].(map[string]any)
+	gates := stored["2"].(map[string]any)
 	if b, _ := json.Marshal(gates); !strings.Contains(string(b), `"context":"tardis/complete","integration_id":123`) ||
 		!strings.Contains(string(b), `"bypass_actors":[]`) || !strings.Contains(string(b), `"refs/heads/main"`) {
 		t.Errorf("tardis-gates: %s", b)
 	}
-	if b, _ := json.Marshal(stored["2"]); !strings.Contains(string(b), `"bypass_mode":"always"`) {
+	if b, _ := json.Marshal(stored["1"]); !strings.Contains(string(b), `"bypass_mode":"always"`) {
 		t.Errorf("tardis-merge-only did not fall back to always: %s", b)
 	}
 	n := writes
-	if got := apply(); got != "tardis-gates unchanged, tardis-merge-only unchanged" || writes != n {
+	if got := apply(); got != "tardis-merge-only unchanged, tardis-gates unchanged" || writes != n {
 		t.Errorf("second apply: %s, %d writes", got, writes-n)
 	}
 	gates["bypass_actors"] = []any{map[string]any{"actor_id": 1, "actor_type": "OrganizationAdmin", "bypass_mode": "always"}}
-	if got := apply(); got != "tardis-gates updated, tardis-merge-only unchanged" {
+	if got := apply(); got != "tardis-merge-only unchanged, tardis-gates updated" {
 		t.Errorf("apply over an added bypass: %s", got)
 	}
-	if b, _ := json.Marshal(stored["1"]); !strings.Contains(string(b), `"bypass_actors":[]`) {
+	if b, _ := json.Marshal(stored["2"]); !strings.Contains(string(b), `"bypass_actors":[]`) {
 		t.Errorf("the bypass survived: %s", b)
 	}
 }

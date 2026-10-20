@@ -275,3 +275,14 @@ func TestForeignPRsAreMarkedIncomplete(t *testing.T) {
 		t.Errorf("open over someone else's PR: %v; want Rejected", err)
 	}
 }
+
+func TestWatchPRRefusesAMergeElsewhere(t *testing.T) {
+	gh := &fakeGitHub{runs: map[string][]map[string]any{}, ci: "completed"}
+	r, url, _, check := appAuditor(t, gh, "")
+	merged := pr(1, "tardis[bot]", "feature", check, "release")
+	merged["state"], merged["merged"], merged["merge_commit_sha"] = "closed", true, "m9"
+	gh.prs = []map[string]any{merged}
+	if ci, err := r.WatchPR(context.Background(), WatchIn{RepoURL: url, Base: "main", Head: check, Number: 1}); err != nil || ci.Kind != "retargeted" {
+		t.Errorf("PR merged into release: %+v, %v; want retargeted, not merged", ci, err)
+	}
+}

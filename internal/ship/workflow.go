@@ -233,7 +233,7 @@ func land(ctx workflow.Context, in Input, res outcome, pr PR, heads workflow.Rec
 	var sig NewHead
 	signalled := false
 	sel := workflow.NewSelector(ctx)
-	sel.AddFuture(workflow.ExecuteActivity(watchOpts(wctx), ActWatchPR, WatchIn{RepoURL: in.RepoURL, Number: pr.Number, Head: res.Tip}),
+	sel.AddFuture(workflow.ExecuteActivity(watchOpts(wctx), ActWatchPR, WatchIn{RepoURL: in.RepoURL, Base: res.Base, Number: pr.Number, Head: res.Tip}),
 		func(f workflow.Future) { err = f.Get(ctx, &ci) })
 	sel.AddReceive(heads, func(c workflow.ReceiveChannel, _ bool) { c.Receive(ctx, &sig); signalled = true })
 	sel.Select(ctx)
