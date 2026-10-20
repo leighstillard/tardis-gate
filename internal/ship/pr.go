@@ -310,6 +310,13 @@ func (r *Auditor) markForeign(ctx context.Context, repoURL string, etags map[str
 	if !ok {
 		return nil
 	}
+	// Under the lock OpenPR holds while it opens a PR and posts its success,
+	// so the list cannot miss a PR the App opens before the marks are posted.
+	unlock, err := r.lock(ctx, repoURL)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	prs, tag, err := r.App.OpenPRs(ctx, repo, etags[repoURL])
 	if errors.Is(err, ghapp.ErrNotModified) {
 		return nil
@@ -320,10 +327,15 @@ func (r *Auditor) markForeign(ctx context.Context, repoURL string, etags map[str
 	if err != nil {
 		return err
 	}
-	base, err := r.baseBranch(ctx, repoURL)
+	dir, err := r.sync(ctx, repoURL)
 	if err != nil {
 		return err
 	}
+	m, err := manifest.LoadRev(dir, "refs/remotes/origin/HEAD")
+	if err != nil {
+		return fmt.Errorf("manifest on the default branch: %w", err)
+	}
+	base := m.BaseBranch
 	// A check run belongs to a commit, not a PR: a foreign PR at the head of
 	// one of the App's would fail the App's PR too. Its head passed the gates,
 	// and only the App can merge, so it is left alone.
@@ -348,22 +360,4 @@ func (r *Auditor) markForeign(ctx context.Context, repoURL string, etags map[str
 	}
 	etags[repoURL] = tag // only once all are marked, so a failed post is tried again
 	return nil
-}
-
-// baseBranch is the base the default branch's manifest names.
-func (r *Auditor) baseBranch(ctx context.Context, repoURL string) (string, error) {
-	unlock, err := r.lock(ctx, repoURL)
-	if err != nil {
-		return "", err
-	}
-	defer unlock()
-	dir, err := r.sync(ctx, repoURL)
-	if err != nil {
-		return "", err
-	}
-	m, err := manifest.LoadRev(dir, "refs/remotes/origin/HEAD")
-	if err != nil {
-		return "", fmt.Errorf("manifest on the default branch: %w", err)
-	}
-	return m.BaseBranch, nil
 }

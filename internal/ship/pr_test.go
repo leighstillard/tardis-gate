@@ -226,6 +226,17 @@ func TestForeignPRsAreMarkedIncomplete(t *testing.T) {
 		pr(5, "someone", "copy", check, "main"), // the App's PR's head: failing it fails the App's PR
 	}
 	etags, marked := map[string]string{}, map[string]bool{}
+	// Marking waits for the repository lock OpenPR holds while it opens a PR.
+	unlock, err := r.lock(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	short, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	if err := r.markForeign(short, url, etags, marked); err == nil || gh.lists != 0 {
+		t.Errorf("marked under a held lock: %v, %d lists", err, gh.lists)
+	}
+	unlock()
 	for range 2 {
 		if err := r.markForeign(ctx, url, etags, marked); err != nil {
 			t.Fatal(err)

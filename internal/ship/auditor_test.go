@@ -365,6 +365,16 @@ func TestAuditorLockGivesUpWithItsContext(t *testing.T) {
 	defer cancel()
 	if _, err := r.lock(ctx, url); err == nil {
 		t.Error("a second lock on a held repository did not give up with its context")
+	} // One GitHub repository under two URLs is one lock.
+	gh, err := r.lock(context.Background(), "https://github.com/O/R.git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gh()
+	ctx, cancel = context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := r.lock(ctx, "git@github.com:o/r"); err == nil {
+		t.Error("the ssh URL did not wait for the https one's lock")
 	}
 }
 

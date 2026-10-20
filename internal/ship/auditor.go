@@ -188,14 +188,20 @@ func checkBase(ctx context.Context, dir, base, baseID string) error {
 // repository never holds up another. Waiting ends with ctx: an activity that
 // timed out must not queue behind one Temporal has already given up on.
 func (r *Auditor) lock(ctx context.Context, repoURL string) (unlock func(), err error) {
+	// One GitHub repository served under two URLs (https and ssh) is one
+	// base: a merge through either must wait for the other.
+	key := repoURL
+	if repo, ok := ghapp.Repo(repoURL); ok {
+		key = repo
+	}
 	r.mu.Lock()
 	if r.locks == nil {
 		r.locks = map[string]chan struct{}{}
 	}
-	l := r.locks[repoURL]
+	l := r.locks[key]
 	if l == nil {
 		l = make(chan struct{}, 1)
-		r.locks[repoURL] = l
+		r.locks[key] = l
 	}
 	r.mu.Unlock()
 	select {
